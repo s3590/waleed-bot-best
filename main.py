@@ -63,11 +63,26 @@ def save_bot_settings():
 def load_bot_settings():
     global bot_state
     try:
-        with open(STATE_FILE, 'r') as f: bot_state.update(json.load(f))
+        with open(STATE_FILE, 'r') as f:
+            loaded_settings = json.load(f)
+            # التأكد من أن جميع المفاتيح الافتراضية موجودة
+            bot_state.update(DEFAULT_SETTINGS)
+            bot_state.update(loaded_settings)
+            # التأكد من أن جميع قيم المؤشرات موجودة
+            if 'indicator_params' not in bot_state:
+                bot_state['indicator_params'] = DEFAULT_SETTINGS['indicator_params'].copy()
+            else:
+                 # دمج القيم المحملة مع ضمان وجود كل المفاتيح الافتراضية
+                default_params = DEFAULT_SETTINGS['indicator_params'].copy()
+                default_params.update(bot_state['indicator_params'])
+                bot_state['indicator_params'] = default_params
+
         logger.info("Bot settings loaded.")
     except (FileNotFoundError, json.JSONDecodeError):
         logger.warning("Settings file not found or invalid. Starting with default settings.")
+        bot_state = DEFAULT_SETTINGS.copy() # إعادة تعيين كامل إذا كان الملف تالفًا
         save_bot_settings()
+
 
 # --- حالات المحادثة ---
 (SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, SETTING_INDICATOR, AWAITING_VALUE) = range(6)
@@ -79,7 +94,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                "مساعدك الذكي لإشارات التداول.\n\n"
                "استخدم الأزرار أدناه للتحكم.")
     await update.message.reply_text(message)
-    return await send_main_menu(update, context, "")
+    return await send_main_menu(update, context)
 
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str = 'القائمة الرئيسية:') -> int:
     status = "يعمل ✅" if bot_state['running'] else "متوقف ❌"
@@ -91,14 +106,12 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     
-    # لا نرسل رسالة جديدة إذا كانت الرسالة الترحيبية قد أرسلت للتو
-    if message_text:
-        if update.callback_query:
-            await update.callback_query.message.reply_text(message_text, reply_markup=reply_markup)
-        else:
-            await update.message.reply_text(message_text, reply_markup=reply_markup)
-    else: # فقط نرسل لوحة المفاتيح
-         await update.message.reply_text("القائمة الرئيسية:", reply_markup=reply_markup)
+    # نرسل لوحة المفاتيح مع رسالة فقط إذا لم تكن الرسالة الترحيبية
+    is_start_command = update.message.text and update.message.text.startswith('/start')
+    if not is_start_command:
+        await update.message.reply_text(message_text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("القائمة الرئيسية:", reply_markup=reply_markup)
 
     return SELECTING_ACTION
 
@@ -176,16 +189,22 @@ async def set_confidence_value(update: Update, context: ContextTypes.DEFAULT_TYP
     title = "الإشارة الأولية" if context.user_data.get('setting_type') == 'initial' else "التأكيد النهائي"
     await update.message.reply_text(f"تم تحديث عتبة {title} إلى: {bot_state[setting_key]}")
     
-    # Go back to the specific confidence menu
     update.message.text = f"تحديد عتبة {title}"
     return await set_confidence_menu(update, context)
 
 async def set_indicator_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     params = bot_state['indicator_params']
     keyboard = [[KeyboardButton(f"{key.replace('_', ' ').title()} ({value})")] for key, value in params.items()]
+    keyboard.append([KeyboardButton("♻️ إعادة تعيين الكل للإعدادات الافتراضية")]) # الزر الجديد
     keyboard.append([KeyboardButton("العودة إلى الإعدادات")])
-    await update.message.reply_text("اختر المؤشر الذي تريد تعديل قيمته:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    await update.message.reply_text("اختر المؤشر الذي تريد تعديل قيمته، أو قم بإعادة التعيين:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return SETTING_INDICATOR
+
+async def reset_indicators_to_default(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    bot_state['indicator_params'] = DEFAULT_SETTINGS['indicator_params'].copy()
+    save_bot_settings()
+    await update.message.reply_text("✅ تم استعادة الإعدادات الافتراضية لجميع المؤشرات.")
+    return await set_indicator_menu(update, context)
 
 async def select_indicator_to_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     param_key_str = update.message.text.split(" (")[0].lower().replace(' ', '_')
@@ -427,15 +446,24 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start),
             ],
             SETTING_CONFIDENCE: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)],
-            SETTING_INDICATOR: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, select_indicator_to_set)],
+            SETTING_INDICATOR: [
+                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
+                MessageHandler(filters.Regex(r'^♻️ إعادة تعيين الكل للإعدادات الافتراضية$'), reset_indicators_to_default), # معالج الزر الجديد
+                MessageHandler(filters.TEXT & ~filters.COMMAND, select_indicator_to_set)
+            ],
             AWAITING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_value)],
         },
         fallbacks=[CommandHandler('start', start)],
+        persistent=True, name="bot_conversation"
+
     )
     application.add_handler(conv_handler)
+    
+    # إعادة جدولة المهام إذا كان البوت يعمل قبل إعادة التشغيل
     if bot_state.get('running'):
         application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
         application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check')
+        
     logger.info("Bot is starting...")
     application.run_polling()
 
