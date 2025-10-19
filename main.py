@@ -14,7 +14,8 @@ import ta
 
 # --- قراءة المتغيرات الحساسة ---
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
-CHAT_ID = int(os.environ.get('TELEGRAM_CHAT_ID'))
+CHAT_ID_STR = os.environ.get('TELEGRAM_CHAT_ID')
+CHAT_ID = int(CHAT_ID_STR) if CHAT_ID_STR else None
 TWELVE_DATA_API_KEY = os.environ.get('TWELVE_DATA_API_KEY')
 
 # --- إعدادات التسجيل ---
@@ -45,14 +46,15 @@ last_signal_candle = {}
 # --- دالة إرسال الأخطاء ---
 async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_message: str):
     logger.error(error_message)
-    try:
-        await context.bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"🤖⚠️ **حدث خطأ في البوت** ⚠️🤖\n\n**التفاصيل:**\n`{error_message}`",
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Could not send error message to Telegram: {e}")
+    if CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"🤖⚠️ **حدث خطأ في البوت** ⚠️🤖\n\n**التفاصيل:**\n`{error_message}`",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Could not send error message to Telegram: {e}")
 
 # --- حفظ وتحميل الحالة ---
 STATE_FILE = 'bot_settings.json'
@@ -280,12 +282,10 @@ async def fetch_historical_data(pair: str, outputsize: int = 100) -> pd.DataFram
             df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
             return df.sort_index()
         elif data.get('code') == 400 and "not found" in data.get('message', ''):
-             # This pair is not supported by the API, log it but don't send to telegram
              logger.warning(f"Pair {pair} not found on Twelve Data. It will be skipped.")
         return pd.DataFrame()
-    except requests.exceptions.RequestException:
-        # Don't send telegram error for network issues, as they can be frequent and temporary
-        logger.error(f"Network error fetching data for {pair}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error fetching data for {pair}: {e}")
         return pd.DataFrame()
 
 async def analyze_and_generate_signal(data: pd.DataFrame, pair: str) -> dict or None:
@@ -302,20 +302,16 @@ async def analyze_and_generate_signal(data: pd.DataFrame, pair: str) -> dict or 
     if data.empty or len(data) < 2: return None
     last, prev = data.iloc[-1], data.iloc[-2]
     buy_signals, sell_signals = 0, 0
-    # RSI
     if last["rsi"] < 35: buy_signals += 1
     if last["rsi"] > 30 and prev["rsi"] <= 30: buy_signals += 1
     if last["rsi"] > 65: sell_signals += 1
     if last["rsi"] < 70 and prev["rsi"] >= 70: sell_signals += 1
-    # MACD
     if last["macd"] > last["macd_signal"] and last["macd"] < 0: buy_signals += 1
     if last["macd"] > last["macd_signal"] and prev["macd"] <= prev["macd_signal"]: buy_signals += 1
     if last["macd"] < last["macd_signal"] and last["macd"] > 0: sell_signals += 1
     if last["macd"] < last["macd_signal"] and prev["macd"] >= prev["macd_signal"]: sell_signals += 1
-    # Bollinger Bands
     if last["Close"] < last["bb_l"]: buy_signals += 1
     if last["Close"] > last["bb_h"]: sell_signals += 1
-    # Stochastic
     if last["stoch_k"] > last["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
     if last["stoch_k"] > last["stoch_d"] and prev["stoch_k"] <= prev["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
     if last["stoch_k"] < last["stoch_d"] and last["stoch_k"] > 70: sell_signals += 1
@@ -368,5 +364,39 @@ def main() -> None:
     load_bot_settings()
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair'))
+    
+    # **هذا هو الجزء الذي تم إصلاحه**
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)]
+        entry_points=[CommandHandler('start', start)],
+        states={
+            SELECTING_ACTION: [
+                MessageHandler(filters.Regex(r'^(حالة البوت:)'), toggle_bot_status),
+                MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
+                MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
+                MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
+                MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
+                MessageHandler(filters.Regex(r'^🌐 فحص الاتصال بالـ API$'), check_api_connection),
+            ],
+            SELECTING_PAIR: [MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start), MessageHandler(filters.TEXT & ~filters.COMMAND, toggle_pair)],
+            SETTINGS_MENU: [
+                MessageHandler(filters.Regex(r'^تحديد عتبة الثقة$'), set_confidence_menu),
+                MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
+                MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start),
+            ],
+            SETTING_CONFIDENCE: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)],
+            SETTING_INDICATOR: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, select_indicator_to_set)],
+            AWAITING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_value)],
+        },
+        fallbacks=[CommandHandler('start', start)],
+    )
+    
+    application.add_handler(conv_handler)
+    
+    if bot_state.get('running'):
+        application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
+        
+    logger.info("Bot is starting...")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
