@@ -369,33 +369,4 @@ def main() -> None:
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair'))
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            SELECTING_ACTION: [
-                MessageHandler(filters.Regex(r'^(حالة البوت:)'), toggle_bot_status),
-                MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
-                MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
-                MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
-                MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
-                MessageHandler(filters.Regex(r'^🌐 فحص الاتصال بالـ API$'), check_api_connection),
-            ],
-            SELECTING_PAIR: [MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start), MessageHandler(filters.TEXT & ~filters.COMMAND, toggle_pair)],
-            SETTINGS_MENU: [
-                MessageHandler(filters.Regex(r'^تحديد عتبة الثقة$'), set_confidence_menu),
-                MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
-                MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start),
-            ],
-            SETTING_CONFIDENCE: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)],
-            SETTING_INDICATOR: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, select_indicator_to_set)],
-            AWAITING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_value)],
-        },
-        fallbacks=[CommandHandler('start', start)],
-    )
-    application.add_handler(conv_handler)
-    if bot_state.get('running'):
-        application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
-    logger.info("Bot is starting...")
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
+        entry_points=[CommandHandler('start', start)]
