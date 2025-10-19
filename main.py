@@ -21,7 +21,7 @@ TWELVE_DATA_API_KEY = os.environ.get('TWELVE_DATA_API_KEY')
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- ** قائمة الأزواج المعتمدة من قبل المستخدم ** ---
+# --- قائمة الأزواج المعتمدة ---
 USER_DEFINED_PAIRS = [
     "EUR/USD", "AED/CNY", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
     "EUR/JPY", "AUD/JPY", "CHF/JPY", "EUR/CHF", "AUD/CHF", "CAD/CHF",
@@ -30,7 +30,7 @@ USER_DEFINED_PAIRS = [
 
 # --- الإعدادات الافتراضية ---
 DEFAULT_SETTINGS = {
-    'running': False, 'selected_pairs': [], 'confidence_threshold': 3,
+    'running': False, 'selected_pairs': [], 'confidence_threshold': 2,
     'indicator_params': {
         'rsi_period': 14, 'macd_fast': 12, 'macd_slow': 26, 'macd_signal': 9,
         'bollinger_period': 20, 'stochastic_period': 14, 'atr_period': 14, 'adx_period': 14
@@ -41,6 +41,18 @@ DEFAULT_SETTINGS = {
 bot_state = DEFAULT_SETTINGS.copy()
 bot_state.update({'chat_id': CHAT_ID, 'twelve_data_api_key': TWELVE_DATA_API_KEY})
 last_signal_candle = {}
+
+# --- دالة إرسال الأخطاء ---
+async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_message: str):
+    logger.error(error_message)
+    try:
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"🤖⚠️ **حدث خطأ في البوت** ⚠️🤖\n\n**التفاصيل:**\n`{error_message}`",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Could not send error message to Telegram: {e}")
 
 # --- حفظ وتحميل الحالة ---
 STATE_FILE = 'bot_settings.json'
@@ -69,7 +81,8 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
         [KeyboardButton(f"حالة البوت: {status}")],
         [KeyboardButton("اختيار الأزواج"), KeyboardButton("الإعدادات ⚙️")],
         [KeyboardButton("🔍 اكتشاف الأزواج النشطة")],
-        [KeyboardButton("عرض الإعدادات الحالية")]
+        [KeyboardButton("عرض الإعدادات الحالية")],
+        [KeyboardButton("🌐 فحص الاتصال بالـ API")]
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     if update.callback_query:
@@ -179,8 +192,33 @@ async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(message, parse_mode='Markdown')
     return SELECTING_ACTION
 
+# --- فحص الاتصال ---
+async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("جاري فحص الاتصال بـ Twelve Data API...")
+    api_key = bot_state.get("twelve_data_api_key")
+    if not api_key:
+        await update.message.reply_text("خطأ: متغير TWELVE_DATA_API_KEY غير موجود.")
+        return SELECTING_ACTION
+    url = f"https://api.twelvedata.com/api_usage?apikey={api_key}"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        message = f"✅ **الاتصال ناجح!**\n\nالرد من الخادم:\n```json\n{json.dumps(data, indent=2)}\n```"
+    except requests.exceptions.HTTPError as e:
+        message = (f"❌ **خطأ في المصادقة (HTTP Error)!**\n\n"
+                   f"هذا يعني أن المفتاح قد يكون غير صالح.\n"
+                   f"**كود الخطأ:** {e.response.status_code}\n"
+                   f"**الرسالة من الخادم:**\n```{e.response.text}```")
+    except requests.exceptions.RequestException as e:
+        message = (f"❌ **خطأ في الاتصال بالشبكة (Network Error)!**\n\n"
+                   f"لم يتمكن البوت من الوصول إلى خوادم Twelve Data.\n"
+                   f"**التفاصيل:**\n```{str(e)}```")
+    await update.message.reply_text(message, parse_mode='Markdown')
+    return SELECTING_ACTION
+
 # --- اكتشاف الأزواج النشطة ---
-async def analyze_pair_activity(pair: str) -> dict or None:
+async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -> dict or None:
     try:
         data = await fetch_historical_data(pair, 100)
         params = bot_state['indicator_params']
@@ -189,15 +227,15 @@ async def analyze_pair_activity(pair: str) -> dict or None:
         atr_percent = (ta.volatility.ATRIndicator(data['High'], data['Low'], data['Close'], window=params['atr_period']).atr().iloc[-1] / data['Close'].iloc[-1]) * 100
         return {'pair': pair, 'adx': adx_value, 'atr_percent': atr_percent}
     except Exception as e:
-        logger.error(f"Error analyzing activity for {pair}: {e}")
+        await send_error_to_telegram(context, f"Error analyzing activity for {pair}: {e}")
         return None
 
 async def find_active_pairs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("🔍 جاري تحليل نشاط السوق... قد يستغرق هذا بعض الوقت.", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
-    tasks = [analyze_pair_activity(pair) for pair in USER_DEFINED_PAIRS]
+    tasks = [analyze_pair_activity(pair, context) for pair in USER_DEFINED_PAIRS]
     results = [res for res in await asyncio.gather(*tasks) if res is not None]
     if not results:
-        return await send_main_menu(update, context, "عذرًا، لم أتمكن من تحليل السوق.")
+        return await send_main_menu(update, context, "عذرًا، لم أتمكن من تحليل السوق. تحقق من سجلات الأخطاء.")
     results.sort(key=lambda x: x['adx'] + (x['atr_percent'] * 20), reverse=True)
     top_pairs = results[:4]
     message = "📈 **أفضل الأزواج النشطة للتداول الآن:**\n\n"
@@ -206,7 +244,7 @@ async def find_active_pairs_command(update: Update, context: ContextTypes.DEFAUL
         reason = "اتجاه قوي" if res['adx'] > 25 else "تقلب جيد" if res['atr_percent'] > 0.04 else "نشاط معتدل"
         message += f"• **{res['pair']}** ({reason})\n"
         keyboard.append([InlineKeyboardButton(f"✅ تفعيل مراقبة {res['pair']}", callback_data=f"addpair_{res['pair']}")])
-    keyboard.append([InlineKeyboardButton("➕ تفعيل مراقبة الكل", callback_data="addpair_all_" + ",".join([p['pair'] for p in top_pairs]))])
+    keyboard.append([InlineKeyboardButton("➕ تفعيل مراقبة الكل", callback_data="addpairall_" + ",".join([p['pair'] for p in top_pairs]))])
     await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     return await send_main_menu(update, context, message_text="اختر إجراءً آخر من القائمة الرئيسية:")
 
@@ -214,7 +252,10 @@ async def add_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     action, payload = query.data.split('_', 1)
-    pairs_to_add = payload.split(',') if 'all' in action else [payload]
+    if action == 'addpairall':
+        pairs_to_add = payload.split(',')
+    else:
+        pairs_to_add = [payload]
     added_now = [pair for pair in pairs_to_add if pair not in bot_state['selected_pairs']]
     if added_now:
         bot_state['selected_pairs'].extend(added_now)
@@ -229,7 +270,7 @@ async def fetch_historical_data(pair: str, outputsize: int = 100) -> pd.DataFram
     if not api_key: return pd.DataFrame()
     url = f"https://api.twelvedata.com/time_series?symbol={pair}&interval=5min&outputsize={outputsize}&apikey={api_key}"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         if "values" in data:
@@ -238,9 +279,13 @@ async def fetch_historical_data(pair: str, outputsize: int = 100) -> pd.DataFram
             df = df.set_index("datetime").astype(float)
             df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
             return df.sort_index()
+        elif data.get('code') == 400 and "not found" in data.get('message', ''):
+             # This pair is not supported by the API, log it but don't send to telegram
+             logger.warning(f"Pair {pair} not found on Twelve Data. It will be skipped.")
         return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Error fetching data for {pair}: {e}")
+    except requests.exceptions.RequestException:
+        # Don't send telegram error for network issues, as they can be frequent and temporary
+        logger.error(f"Network error fetching data for {pair}")
         return pd.DataFrame()
 
 async def analyze_and_generate_signal(data: pd.DataFrame, pair: str) -> dict or None:
@@ -257,29 +302,37 @@ async def analyze_and_generate_signal(data: pd.DataFrame, pair: str) -> dict or 
     if data.empty or len(data) < 2: return None
     last, prev = data.iloc[-1], data.iloc[-2]
     buy_signals, sell_signals = 0, 0
+    # RSI
+    if last["rsi"] < 35: buy_signals += 1
     if last["rsi"] > 30 and prev["rsi"] <= 30: buy_signals += 1
+    if last["rsi"] > 65: sell_signals += 1
     if last["rsi"] < 70 and prev["rsi"] >= 70: sell_signals += 1
+    # MACD
+    if last["macd"] > last["macd_signal"] and last["macd"] < 0: buy_signals += 1
     if last["macd"] > last["macd_signal"] and prev["macd"] <= prev["macd_signal"]: buy_signals += 1
+    if last["macd"] < last["macd_signal"] and last["macd"] > 0: sell_signals += 1
     if last["macd"] < last["macd_signal"] and prev["macd"] >= prev["macd_signal"]: sell_signals += 1
-    if last["Close"] < last["bb_l"] and prev["Close"] >= prev["bb_l"]: buy_signals += 1
-    if last["Close"] > last["bb_h"] and prev["Close"] <= prev["bb_h"]: sell_signals += 1
-    if last["stoch_k"] > last["stoch_d"] and prev["stoch_k"] <= prev["stoch_d"] and last["stoch_k"] < 20: buy_signals += 1
-    if last["stoch_k"] < last["stoch_d"] and prev["stoch_k"] >= prev["stoch_d"] and last["stoch_k"] > 80: sell_signals += 1
+    # Bollinger Bands
+    if last["Close"] < last["bb_l"]: buy_signals += 1
+    if last["Close"] > last["bb_h"]: sell_signals += 1
+    # Stochastic
+    if last["stoch_k"] > last["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
+    if last["stoch_k"] > last["stoch_d"] and prev["stoch_k"] <= prev["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
+    if last["stoch_k"] < last["stoch_d"] and last["stoch_k"] > 70: sell_signals += 1
+    if last["stoch_k"] < last["stoch_d"] and prev["stoch_k"] >= prev["stoch_d"] and last["stoch_k"] > 70: sell_signals += 1
     direction = None
     if buy_signals >= bot_state['confidence_threshold'] and sell_signals == 0: direction = "صعود ⬆️"
     elif sell_signals >= bot_state['confidence_threshold'] and buy_signals == 0: direction = "هبوط ⬇️"
     if direction:
-        return {
-            "pair": pair, "timeframe": "5min", "entry_time": (datetime.now() + timedelta(seconds=30)).strftime("%H:%M:%S"),
-            "direction": direction, "confidence": f"{max(buy_signals, sell_signals)}/4", "duration": "300 ثانية"
-        }
+        return {"pair": pair, "timeframe": "5min", "entry_time": (datetime.now() + timedelta(seconds=10)).strftime("%H:%M:%S"),
+                "direction": direction, "confidence": f"{max(buy_signals, sell_signals)} مؤشرات", "duration": "300 ثانية"}
     return None
 
 async def send_signal_to_telegram(context: ContextTypes.DEFAULT_TYPE, signal: dict):
     message = (f"⚠️ **إشارة جديدة** ⚠️\n\n"
                f"**الزوج:** {signal['pair']}\n**الفريم:** {signal['timeframe']}\n"
                f"**وقت الدخول:** {signal['entry_time']}\n**الاتجاه:** {signal['direction']}\n"
-               f"**قوة الإشارة:** {signal['confidence']} مؤشرات متوافقة\n**مدة الصفقة:** {signal['duration']}")
+               f"**قوة الإشارة:** {signal['confidence']}\n**مدة الصفقة:** {signal['duration']}")
     await context.bot.send_message(chat_id=bot_state["chat_id"], text=message, parse_mode='Markdown')
 
 async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
@@ -304,17 +357,17 @@ async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
                     logger.info(f"Signal sent for {pair}. Storing candle_id: {current_candle_id}")
             await asyncio.sleep(5)
         except Exception as e:
-            logger.error(f"An error occurred while processing pair {pair}: {e}")
+            await send_error_to_telegram(context, f"Error processing pair {pair} in check_for_signals: {e}")
             await asyncio.sleep(5)
 
 # --- إعداد وتشغيل البوت ---
 def main() -> None:
-    if not TOKEN:
-        logger.critical("TELEGRAM_TOKEN environment variable not set.")
+    if not all([TOKEN, CHAT_ID, TWELVE_DATA_API_KEY]):
+        logger.critical("One or more environment variables (TOKEN, CHAT_ID, API_KEY) are missing.")
         return
     load_bot_settings()
     application = Application.builder().token(TOKEN).build()
-    application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair_'))
+    application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair'))
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
@@ -324,6 +377,7 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
                 MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
                 MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
+                MessageHandler(filters.Regex(r'^🌐 فحص الاتصال بالـ API$'), check_api_connection),
             ],
             SELECTING_PAIR: [MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start), MessageHandler(filters.TEXT & ~filters.COMMAND, toggle_pair)],
             SETTINGS_MENU: [
