@@ -42,9 +42,8 @@ DEFAULT_SETTINGS = {
 }
 
 # --- حالة البوت وذاكرة الإشارات ---
-bot_state = DEFAULT_SETTINGS.copy()
-bot_state.update({'chat_id': CHAT_ID, 'twelve_data_api_key': TWELVE_DATA_API_KEY})
-pending_signals = {}  # { 'pair': { 'direction': '...', 'message_id': ..., 'timestamp': ... } }
+bot_state = {}
+pending_signals = {}
 
 # --- دوال المساعدة ---
 async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_message: str):
@@ -63,22 +62,18 @@ def save_bot_settings():
 
 def load_bot_settings():
     global bot_state
+    bot_state = DEFAULT_SETTINGS.copy()
     try:
         with open(STATE_FILE, 'r') as f:
             loaded_settings = json.load(f)
-            bot_state.update(DEFAULT_SETTINGS)
             bot_state.update(loaded_settings)
-            if 'indicator_params' not in bot_state:
-                bot_state['indicator_params'] = DEFAULT_SETTINGS['indicator_params'].copy()
-            else:
-                default_params = DEFAULT_SETTINGS['indicator_params'].copy()
-                default_params.update(bot_state['indicator_params'])
-                bot_state['indicator_params'] = default_params
-        logger.info("Bot settings loaded.")
+        logger.info("Bot settings loaded from file.")
     except (FileNotFoundError, json.JSONDecodeError):
         logger.warning("Settings file not found or invalid. Starting with default settings.")
-        bot_state = DEFAULT_SETTINGS.copy()
         save_bot_settings()
+    
+    bot_state['chat_id'] = CHAT_ID
+    bot_state['twelve_data_api_key'] = TWELVE_DATA_API_KEY
 
 # --- حالات المحادثة ---
 (SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, SETTING_INDICATOR, AWAITING_VALUE) = range(6)
@@ -93,7 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return await send_main_menu(update, context)
 
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_text: str = 'القائمة الرئيسية:') -> int:
-    status = "يعمل ✅" if bot_state['running'] else "متوقف ❌"
+    status = "يعمل ✅" if bot_state.get('running', False) else "متوقف ❌"
     main_menu_keyboard = [
         [KeyboardButton(f"حالة البوت: {status}")],
         [KeyboardButton("اختيار الأزواج"), KeyboardButton("الإعدادات ⚙️")],
@@ -109,7 +104,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
     return SELECTING_ACTION
 
 async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    was_running = bot_state['running']
+    was_running = bot_state.get('running', False)
     bot_state['running'] = not was_running
     save_bot_settings()
     if bot_state['running']:
@@ -126,8 +121,9 @@ async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return await send_main_menu(update, context, "")
 
 async def select_pairs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    message = "اختر زوجًا لإضافته أو إزالته. الأزواج المختارة حاليًا:\n" + (", ".join(bot_state['selected_pairs']) or "لا يوجد")
-    pairs_keyboard = [[KeyboardButton(f"{pair} {'✅' if pair in bot_state['selected_pairs'] else '❌'}")] for pair in USER_DEFINED_PAIRS]
+    selected = bot_state.get('selected_pairs', [])
+    message = "اختر زوجًا لإضافته أو إزالته. الأزواج المختارة حاليًا:\n" + (", ".join(selected) or "لا يوجد")
+    pairs_keyboard = [[KeyboardButton(f"{pair} {'✅' if pair in selected else '❌'}")] for pair in USER_DEFINED_PAIRS]
     pairs_keyboard.append([KeyboardButton("العودة إلى القائمة الرئيسية")])
     reply_markup = ReplyKeyboardMarkup(pairs_keyboard, resize_keyboard=True)
     await update.message.reply_text(message, reply_markup=reply_markup)
@@ -135,8 +131,12 @@ async def select_pairs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def toggle_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     pair = update.message.text.split(" ")[0]
-    if pair in bot_state['selected_pairs']: bot_state['selected_pairs'].remove(pair)
-    else: bot_state['selected_pairs'].append(pair)
+    if 'selected_pairs' not in bot_state:
+        bot_state['selected_pairs'] = []
+    if pair in bot_state['selected_pairs']:
+        bot_state['selected_pairs'].remove(pair)
+    else:
+        bot_state['selected_pairs'].append(pair)
     save_bot_settings()
     return await select_pairs_menu(update, context)
 
@@ -145,16 +145,43 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         [KeyboardButton("تحديد عتبة الإشارة الأولية")],
         [KeyboardButton("تحديد عتبة التأكيد النهائي")],
         [KeyboardButton("تعديل قيم المؤشرات")],
+        [KeyboardButton("🔬 فحص اتصال API")],
         [KeyboardButton("العودة إلى القائمة الرئيسية")]
     ]
     reply_markup = ReplyKeyboardMarkup(settings_keyboard, resize_keyboard=True)
     await update.message.reply_text("اختر الإعداد الذي تريد تعديله:", reply_markup=reply_markup)
     return SETTINGS_MENU
 
+async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    api_key = bot_state.get('twelve_data_api_key')
+    if not api_key:
+        await update.message.reply_text("❌ خطأ: مفتاح API غير موجود في الإعدادات.")
+        return SETTINGS_MENU
+    
+    url = f"https://api.twelvedata.com/api_usage?apikey={api_key}"
+    await update.message.reply_text("🔬 جاري فحص الاتصال...")
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        if response.status_code == 200:
+            message = (f"✅ **الاتصال ناجح!**\n\n"
+                       f"**الخطة:** {data.get('plan', 'غير معروف')}\n"
+                       f"**الاستخدام اليومي:** {data.get('daily_usage', 0)} / 800")
+            await update.message.reply_text(message, parse_mode='Markdown')
+        else:
+            message = f"❌ **فشل الاتصال!**\n\n**الرمز:** {data.get('code')}\n**الرسالة:** {data.get('message')}"
+            await update.message.reply_text(message, parse_mode='Markdown')
+            
+    except requests.RequestException as e:
+        await update.message.reply_text(f"❌ **خطأ في الشبكة!**\n\nلا يمكن الوصول إلى خوادم Twelve Data. التفاصيل: {e}")
+        
+    return SETTINGS_MENU
+
 async def set_confidence_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['setting_type'] = 'initial' if 'الأولية' in update.message.text else 'final'
     setting_key = 'initial_confidence' if context.user_data['setting_type'] == 'initial' else 'final_confidence'
-    current = bot_state[setting_key]
+    current = bot_state.get(setting_key, 2)
     title = "عتبة الإشارة الأولية" if context.user_data['setting_type'] == 'initial' else "عتبة التأكيد النهائي"
     message = f"اختر الحد الأدنى من المؤشرات المتوافقة لـ **{title}**.\nالحالي: {current}"
     keyboard = [
@@ -174,12 +201,12 @@ async def set_confidence_value(update: Update, context: ContextTypes.DEFAULT_TYP
     elif "4 مؤشرات" in choice: bot_state[setting_key] = 4
     save_bot_settings()
     title = "الإشارة الأولية" if context.user_data.get('setting_type') == 'initial' else "التأكيد النهائي"
-    await update.message.reply_text(f"تم تحديث عتبة {title} إلى: {bot_state[setting_key]}")
+    await update.message.reply_text(f"تم تحديث عتبة {title} إلى: {bot_state.get(setting_key)}")
     update.message.text = f"تحديد عتبة {title}"
     return await set_confidence_menu(update, context)
 
 async def set_indicator_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    params = bot_state['indicator_params']
+    params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
     keyboard = [[KeyboardButton(f"{key.replace('_', ' ').title()} ({value})")] for key, value in params.items()]
     keyboard.append([KeyboardButton("♻️ إعادة تعيين الكل للإعدادات الافتراضية")])
     keyboard.append([KeyboardButton("العودة إلى الإعدادات")])
@@ -194,7 +221,7 @@ async def reset_indicators_to_default(update: Update, context: ContextTypes.DEFA
 
 async def select_indicator_to_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     param_key_str = update.message.text.split(" (")[0].lower().replace(' ', '_')
-    if param_key_str in bot_state['indicator_params']:
+    if param_key_str in bot_state.get('indicator_params', {}):
         context.user_data['param_to_set'] = param_key_str
         await update.message.reply_text(f"أرسل القيمة الرقمية الجديدة لـ {param_key_str}:")
         return AWAITING_VALUE
@@ -206,6 +233,8 @@ async def receive_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         new_value = int(update.message.text)
         param_key = context.user_data.get('param_to_set')
         if param_key:
+            if 'indicator_params' not in bot_state:
+                bot_state['indicator_params'] = DEFAULT_SETTINGS['indicator_params'].copy()
             bot_state['indicator_params'][param_key] = new_value
             save_bot_settings()
             await update.message.reply_text("تم حفظ القيمة بنجاح!")
@@ -217,13 +246,13 @@ async def receive_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return await settings_menu(update, context)
 
 async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    pairs_str = ", ".join(bot_state['selected_pairs']) or "لا يوجد"
-    params = bot_state['indicator_params']
+    pairs_str = ", ".join(bot_state.get('selected_pairs', [])) or "لا يوجد"
+    params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
     message = (f"**⚙️ الإعدادات الحالية**\n\n"
                f"**الفريم:** 5 دقائق\n"
                f"**الأزواج:** {pairs_str}\n"
-               f"**عتبة الإشارة الأولية:** {bot_state['initial_confidence']} مؤشرات\n"
-               f"**عتبة التأكيد النهائي:** {bot_state['final_confidence']} مؤشرات\n\n"
+               f"**عتبة الإشارة الأولية:** {bot_state.get('initial_confidence', 2)} مؤشرات\n"
+               f"**عتبة التأكيد النهائي:** {bot_state.get('final_confidence', 3)} مؤشرات\n\n"
                f"**قيم المؤشرات:**\n" +
                "\n".join([f"- {key.replace('_', ' ').title()}: {value}" for key, value in params.items()]))
     await update.message.reply_text(message, parse_mode='Markdown')
@@ -232,10 +261,10 @@ async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TY
 async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -> dict or None:
     try:
         data = await fetch_historical_data(pair, 100)
-        params = bot_state['indicator_params']
-        if data.empty or len(data) < max(params['adx_period'], params['atr_period']): return None
-        adx_value = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=params['adx_period']).adx().iloc[-1]
-        atr_value = ta.volatility.AverageTrueRange(data['High'], data['Low'], data['Close'], window=params['atr_period']).average_true_range().iloc[-1]
+        params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
+        if data.empty or len(data) < max(params.get('adx_period', 14), params.get('atr_period', 14)): return None
+        adx_value = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=params.get('adx_period', 14)).adx().iloc[-1]
+        atr_value = ta.volatility.AverageTrueRange(data['High'], data['Low'], data['Close'], window=params.get('atr_period', 14)).average_true_range().iloc[-1]
         atr_percent = (atr_value / data['Close'].iloc[-1]) * 100
         return {'pair': pair, 'adx': adx_value, 'atr_percent': atr_percent}
     except Exception as e:
@@ -256,12 +285,12 @@ async def find_active_pairs_command(update: Update, context: ContextTypes.DEFAUL
             await asyncio.sleep(8)
     if not all_results:
         return await send_main_menu(update, context, "عذرًا، لم أتمكن من تحليل السوق. تحقق من سجلات الأخطاء.")
-    all_results.sort(key=lambda x: x['adx'] + (x['atr_percent'] * 20), reverse=True)
+    all_results.sort(key=lambda x: x.get('adx', 0) + (x.get('atr_percent', 0) * 20), reverse=True)
     top_pairs = all_results[:4]
     message = "📈 **أفضل الأزواج النشطة للتداول الآن:**\n\n"
     keyboard = []
     for res in top_pairs:
-        reason = "اتجاه قوي" if res['adx'] > 25 else "تقلب جيد" if res['atr_percent'] > 0.04 else "نشاط معتدل"
+        reason = "اتجاه قوي" if res.get('adx', 0) > 25 else "تقلب جيد" if res.get('atr_percent', 0) > 0.04 else "نشاط معتدل"
         message += f"• **{res['pair']}** ({reason})\n"
         keyboard.append([InlineKeyboardButton(f"✅ تفعيل مراقبة {res['pair']}", callback_data=f"addpair_{res['pair']}")])
     keyboard.append([InlineKeyboardButton("➕ تفعيل مراقبة الكل", callback_data="addpairall_" + ",".join([p['pair'] for p in top_pairs]))])
@@ -273,6 +302,8 @@ async def add_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     action, payload = query.data.split('_', 1)
     pairs_to_add = payload.split(',') if action == 'addpairall' else [payload]
+    if 'selected_pairs' not in bot_state:
+        bot_state['selected_pairs'] = []
     added_now = [pair for pair in pairs_to_add if pair not in bot_state['selected_pairs']]
     if added_now:
         bot_state['selected_pairs'].extend(added_now)
@@ -282,7 +313,7 @@ async def add_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(text="الأزواج المحددة مفعلة بالفعل.")
 
 async def fetch_historical_data(pair: str, outputsize: int = 100) -> pd.DataFrame:
-    api_key = bot_state["twelve_data_api_key"]
+    api_key = bot_state.get("twelve_data_api_key")
     if not api_key: return pd.DataFrame()
     url = f"https://api.twelvedata.com/time_series?symbol={pair}&interval=5min&outputsize={outputsize}&apikey={api_key}"
     try:
@@ -301,14 +332,14 @@ async def fetch_historical_data(pair: str, outputsize: int = 100) -> pd.DataFram
         return pd.DataFrame()
 
 async def analyze_signal_strength(data: pd.DataFrame) -> dict:
-    params = bot_state['indicator_params']
+    params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
     if data.empty or len(data) < max(params.values()): return {'buy': 0, 'sell': 0}
-    data["rsi"] = ta.momentum.RSIIndicator(data["Close"], window=params['rsi_period']).rsi()
-    macd = ta.trend.MACD(data["Close"], window_fast=params['macd_fast'], window_slow=params['macd_slow'], window_sign=params['macd_signal'])
+    data["rsi"] = ta.momentum.RSIIndicator(data["Close"], window=params.get('rsi_period', 14)).rsi()
+    macd = ta.trend.MACD(data["Close"], window_fast=params.get('macd_fast', 12), window_slow=params.get('macd_slow', 26), window_sign=params.get('macd_signal', 9))
     data["macd"], data["macd_signal"] = macd.macd(), macd.macd_signal()
-    bollinger = ta.volatility.BollingerBands(data["Close"], window=params['bollinger_period'])
+    bollinger = ta.volatility.BollingerBands(data["Close"], window=params.get('bollinger_period', 20))
     data["bb_h"], data["bb_l"] = bollinger.bollinger_hband(), bollinger.bollinger_lband()
-    stoch = ta.momentum.StochasticOscillator(data["High"], data["Low"], data["Close"], window=params['stochastic_period'])
+    stoch = ta.momentum.StochasticOscillator(data["High"], data["Low"], data["Close"], window=params.get('stochastic_period', 14))
     data["stoch_k"], data["stoch_d"] = stoch.stoch(), stoch.stoch_signal()
     data.dropna(inplace=True)
     if data.empty or len(data) < 2: return {'buy': 0, 'sell': 0}
@@ -331,11 +362,11 @@ async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     return {'buy': buy_signals, 'sell': sell_signals}
 
 async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
-    if not bot_state["running"] or not bot_state['selected_pairs']: return
+    if not bot_state.get("running") or not bot_state.get('selected_pairs'): return
     now = datetime.now()
     if now.minute % 5 != 0: return
     logger.info("Checking for potential signals...")
-    for pair in bot_state['selected_pairs']:
+    for pair in bot_state.get('selected_pairs', []):
         if pair in pending_signals: continue
         try:
             data = await fetch_historical_data(pair)
@@ -343,8 +374,8 @@ async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
             strength = await analyze_signal_strength(data)
             buy_strength, sell_strength = strength['buy'], strength['sell']
             direction = None
-            if buy_strength >= bot_state['initial_confidence'] and sell_strength == 0: direction = "صعود"
-            elif sell_strength >= bot_state['initial_confidence'] and buy_strength == 0: direction = "هبوط"
+            if buy_strength >= bot_state.get('initial_confidence', 2) and sell_strength == 0: direction = "صعود"
+            elif sell_strength >= bot_state.get('initial_confidence', 2) and buy_strength == 0: direction = "هبوط"
             if direction:
                 entry_time = (now + timedelta(minutes=5) - timedelta(seconds=now.second)).strftime("%H:%M:00")
                 direction_emoji = "🟢" if direction == "صعود" else "🔴"
@@ -363,7 +394,7 @@ async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
             await send_error_to_telegram(context, f"Error in check_for_signals for {pair}: {e}")
 
 async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
-    if not bot_state["running"] or not pending_signals: return
+    if not bot_state.get("running") or not pending_signals: return
     now = datetime.now()
     for pair, signal_info in list(pending_signals.items()):
         try:
@@ -374,13 +405,13 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
                 strength = await analyze_signal_strength(data)
                 buy_strength, sell_strength = strength['buy'], strength['sell']
                 confirmed = False
-                if signal_info['direction'] == 'صعود' and buy_strength >= bot_state['final_confidence'] and sell_strength == 0:
+                if signal_info['direction'] == 'صعود' and buy_strength >= bot_state.get('final_confidence', 3) and sell_strength == 0:
                     confirmed = True
                     confirmation_text = ( "✅✅✅   تــأكــيــد الــدخــول   ✅✅✅\n\n"
                                          f"الزوج: {pair} OTC\n"
                                          "الاتجاه: صعود ⬆️\n\n"
                                          "          🔥 ادخــــــــل الآن 🔥")
-                elif signal_info['direction'] == 'هبوط' and sell_strength >= bot_state['final_confidence'] and buy_strength == 0:
+                elif signal_info['direction'] == 'هبوط' and sell_strength >= bot_state.get('final_confidence', 3) and buy_strength == 0:
                     confirmed = True
                     confirmation_text = ("✅✅✅   تــأكــيــد الــدخــول   ✅✅✅\n\n"
                                          f"الزوج: {pair} OTC\n"
@@ -406,7 +437,7 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
 
 def main() -> None:
     if not all([TOKEN, CHAT_ID, TWELVE_DATA_API_KEY]):
-        logger.critical("One or more environment variables are missing.")
+        logger.critical("One or more environment variables are missing (TOKEN, CHAT_ID, or API_KEY).")
         return
     load_bot_settings()
     persistence = PicklePersistence(filepath="bot_persistence")
@@ -427,9 +458,11 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^تحديد عتبة الإشارة الأولية$'), set_confidence_menu),
                 MessageHandler(filters.Regex(r'^تحديد عتبة التأكيد النهائي$'), set_confidence_menu),
                 MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
+                MessageHandler(filters.Regex(r'^🔬 فحص اتصال API$'), check_api_connection),
                 MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start),
             ],
-            SETTING_CONFIDENCE: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)],
+            SETTING_CONFIDENCE: [MessageHandler(filters.Regex(r'ال
+عودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)],
             SETTING_INDICATOR: [
                 MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
                 MessageHandler(filters.Regex(r'^♻️ إعادة تعيين الكل للإعدادات الافتراضية$'), reset_indicators_to_default),
@@ -441,9 +474,12 @@ def main() -> None:
         persistent=True, name="bot_conversation"
     )
     application.add_handler(conv_handler)
+    
+    # إعادة جدولة المهام إذا كان البوت يعمل قبل إعادة التشغيل
     if bot_state.get('running'):
         application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
         application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check')
+        
     logger.info("Bot is starting...")
     application.run_polling()
 
