@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler
+    ContextTypes, ConversationHandler, CallbackQueryHandler,
+    PicklePersistence
 )
 import pandas as pd
 import requests
@@ -65,24 +66,19 @@ def load_bot_settings():
     try:
         with open(STATE_FILE, 'r') as f:
             loaded_settings = json.load(f)
-            # التأكد من أن جميع المفاتيح الافتراضية موجودة
             bot_state.update(DEFAULT_SETTINGS)
             bot_state.update(loaded_settings)
-            # التأكد من أن جميع قيم المؤشرات موجودة
             if 'indicator_params' not in bot_state:
                 bot_state['indicator_params'] = DEFAULT_SETTINGS['indicator_params'].copy()
             else:
-                 # دمج القيم المحملة مع ضمان وجود كل المفاتيح الافتراضية
                 default_params = DEFAULT_SETTINGS['indicator_params'].copy()
                 default_params.update(bot_state['indicator_params'])
                 bot_state['indicator_params'] = default_params
-
         logger.info("Bot settings loaded.")
     except (FileNotFoundError, json.JSONDecodeError):
         logger.warning("Settings file not found or invalid. Starting with default settings.")
-        bot_state = DEFAULT_SETTINGS.copy() # إعادة تعيين كامل إذا كان الملف تالفًا
+        bot_state = DEFAULT_SETTINGS.copy()
         save_bot_settings()
-
 
 # --- حالات المحادثة ---
 (SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, SETTING_INDICATOR, AWAITING_VALUE) = range(6)
@@ -105,21 +101,17 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
         [KeyboardButton("عرض الإعدادات الحالية")]
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
-    
-    # نرسل لوحة المفاتيح مع رسالة فقط إذا لم تكن الرسالة الترحيبية
     is_start_command = update.message.text and update.message.text.startswith('/start')
     if not is_start_command:
         await update.message.reply_text(message_text, reply_markup=reply_markup)
     else:
         await update.message.reply_text("القائمة الرئيسية:", reply_markup=reply_markup)
-
     return SELECTING_ACTION
 
 async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     was_running = bot_state['running']
     bot_state['running'] = not was_running
     save_bot_settings()
-    
     if bot_state['running']:
         message = "✅ تم تشغيل البوت.\n\nسيبدأ الآن في تحليل السوق وإرسال الإشارات الأولية وتأكيداتها."
         if not context.job_queue.get_jobs_by_name('signal_check'):
@@ -130,7 +122,6 @@ async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         message = "❌ تم إيقاف البوت."
         for job in context.job_queue.get_jobs_by_name('signal_check'): job.schedule_removal()
         for job in context.job_queue.get_jobs_by_name('confirmation_check'): job.schedule_removal()
-        
     await update.message.reply_text(message)
     return await send_main_menu(update, context, "")
 
@@ -164,10 +155,8 @@ async def set_confidence_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['setting_type'] = 'initial' if 'الأولية' in update.message.text else 'final'
     setting_key = 'initial_confidence' if context.user_data['setting_type'] == 'initial' else 'final_confidence'
     current = bot_state[setting_key]
-    
     title = "عتبة الإشارة الأولية" if context.user_data['setting_type'] == 'initial' else "عتبة التأكيد النهائي"
     message = f"اختر الحد الأدنى من المؤشرات المتوافقة لـ **{title}**.\nالحالي: {current}"
-    
     keyboard = [
         [KeyboardButton(f"مؤشرين (مغامر) {'✅' if current == 2 else ''}")],
         [KeyboardButton(f"3 مؤشرات (متوازن) {'✅' if current == 3 else ''}")],
@@ -179,23 +168,20 @@ async def set_confidence_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def set_confidence_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     setting_key = 'initial_confidence' if context.user_data.get('setting_type') == 'initial' else 'final_confidence'
-    
     choice = update.message.text
     if "مؤشرين" in choice: bot_state[setting_key] = 2
     elif "3 مؤشرات" in choice: bot_state[setting_key] = 3
     elif "4 مؤشرات" in choice: bot_state[setting_key] = 4
     save_bot_settings()
-    
     title = "الإشارة الأولية" if context.user_data.get('setting_type') == 'initial' else "التأكيد النهائي"
     await update.message.reply_text(f"تم تحديث عتبة {title} إلى: {bot_state[setting_key]}")
-    
     update.message.text = f"تحديد عتبة {title}"
     return await set_confidence_menu(update, context)
 
 async def set_indicator_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     params = bot_state['indicator_params']
     keyboard = [[KeyboardButton(f"{key.replace('_', ' ').title()} ({value})")] for key, value in params.items()]
-    keyboard.append([KeyboardButton("♻️ إعادة تعيين الكل للإعدادات الافتراضية")]) # الزر الجديد
+    keyboard.append([KeyboardButton("♻️ إعادة تعيين الكل للإعدادات الافتراضية")])
     keyboard.append([KeyboardButton("العودة إلى الإعدادات")])
     await update.message.reply_text("اختر المؤشر الذي تريد تعديل قيمته، أو قم بإعادة التعيين:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return SETTING_INDICATOR
@@ -243,7 +229,6 @@ async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(message, parse_mode='Markdown')
     return SELECTING_ACTION
 
-# --- اكتشاف الأزواج النشطة ---
 async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -> dict or None:
     try:
         data = await fetch_historical_data(pair, 100)
@@ -296,7 +281,6 @@ async def add_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     else:
         await query.edit_message_text(text="الأزواج المحددة مفعلة بالفعل.")
 
-# --- منطق التحليل والإشارات بنظام التأكيد ---
 async def fetch_historical_data(pair: str, outputsize: int = 100) -> pd.DataFrame:
     api_key = bot_state["twelve_data_api_key"]
     if not api_key: return pd.DataFrame()
@@ -420,13 +404,13 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
             await send_error_to_telegram(context, f"Error in confirm_pending_signals for {pair}: {e}")
             if pair in pending_signals: del pending_signals[pair]
 
-# --- إعداد وتشغيل البوت ---
 def main() -> None:
     if not all([TOKEN, CHAT_ID, TWELVE_DATA_API_KEY]):
         logger.critical("One or more environment variables are missing.")
         return
     load_bot_settings()
-    application = Application.builder().token(TOKEN).build()
+    persistence = PicklePersistence(filepath="bot_persistence")
+    application = Application.builder().token(TOKEN).persistence(persistence).build()
     application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair'))
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -448,22 +432,18 @@ def main() -> None:
             SETTING_CONFIDENCE: [MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)],
             SETTING_INDICATOR: [
                 MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
-                MessageHandler(filters.Regex(r'^♻️ إعادة تعيين الكل للإعدادات الافتراضية$'), reset_indicators_to_default), # معالج الزر الجديد
+                MessageHandler(filters.Regex(r'^♻️ إعادة تعيين الكل للإعدادات الافتراضية$'), reset_indicators_to_default),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, select_indicator_to_set)
             ],
             AWAITING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_value)],
         },
         fallbacks=[CommandHandler('start', start)],
         persistent=True, name="bot_conversation"
-
     )
     application.add_handler(conv_handler)
-    
-    # إعادة جدولة المهام إذا كان البوت يعمل قبل إعادة التشغيل
     if bot_state.get('running'):
         application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
         application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check')
-        
     logger.info("Bot is starting...")
     application.run_polling()
 
