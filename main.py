@@ -225,28 +225,50 @@ async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -
         data = await fetch_historical_data(pair, 100)
         params = bot_state['indicator_params']
         if data.empty or len(data) < max(params['adx_period'], params['atr_period']): return None
+        
+        # **هنا تم التصحيح**
         adx_value = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=params['adx_period']).adx().iloc[-1]
-        atr_percent = (ta.volatility.ATRIndicator(data['High'], data['Low'], data['Close'], window=params['atr_period']).atr().iloc[-1] / data['Close'].iloc[-1]) * 100
+        atr_value = ta.volatility.AverageTrueRange(data['High'], data['Low'], data['Close'], window=params['atr_period']).average_true_range().iloc[-1]
+        atr_percent = (atr_value / data['Close'].iloc[-1]) * 100
+        
         return {'pair': pair, 'adx': adx_value, 'atr_percent': atr_percent}
     except Exception as e:
         await send_error_to_telegram(context, f"Error analyzing activity for {pair}: {e}")
         return None
 
 async def find_active_pairs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("🔍 جاري تحليل نشاط السوق... قد يستغرق هذا بعض الوقت.", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
-    tasks = [analyze_pair_activity(pair, context) for pair in USER_DEFINED_PAIRS]
-    results = [res for res in await asyncio.gather(*tasks) if res is not None]
-    if not results:
+    await update.message.reply_text("🔍 جاري تحليل نشاط السوق... هذه العملية ستحترم حدود الـ API وقد تستغرق بضع دقائق.", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
+    
+    all_results = []
+    for pair in USER_DEFINED_PAIRS:
+        try:
+            logger.info(f"Analyzing activity for pair: {pair}")
+            result = await analyze_pair_activity(pair, context)
+            if result:
+                all_results.append(result)
+            
+            # ننتظر 8 ثوانٍ لضمان عدم تجاوز حد 8 طلبات/دقيقة
+            await asyncio.sleep(8)
+
+        except Exception as e:
+            await send_error_to_telegram(context, f"Error during active pair discovery for {pair}: {e}")
+            await asyncio.sleep(8)
+
+    if not all_results:
         return await send_main_menu(update, context, "عذرًا، لم أتمكن من تحليل السوق. تحقق من سجلات الأخطاء.")
-    results.sort(key=lambda x: x['adx'] + (x['atr_percent'] * 20), reverse=True)
-    top_pairs = results[:4]
+        
+    all_results.sort(key=lambda x: x['adx'] + (x['atr_percent'] * 20), reverse=True)
+    top_pairs = all_results[:4]
+    
     message = "📈 **أفضل الأزواج النشطة للتداول الآن:**\n\n"
     keyboard = []
     for res in top_pairs:
         reason = "اتجاه قوي" if res['adx'] > 25 else "تقلب جيد" if res['atr_percent'] > 0.04 else "نشاط معتدل"
         message += f"• **{res['pair']}** ({reason})\n"
         keyboard.append([InlineKeyboardButton(f"✅ تفعيل مراقبة {res['pair']}", callback_data=f"addpair_{res['pair']}")])
+    
     keyboard.append([InlineKeyboardButton("➕ تفعيل مراقبة الكل", callback_data="addpairall_" + ",".join([p['pair'] for p in top_pairs]))])
+    
     await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     return await send_main_menu(update, context, message_text="اختر إجراءً آخر من القائمة الرئيسية:")
 
@@ -365,7 +387,6 @@ def main() -> None:
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair'))
     
-    # **هذا هو الجزء الذي تم إصلاحه**
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
