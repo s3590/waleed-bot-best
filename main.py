@@ -372,7 +372,7 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
         patterns['sell'] += 1
     body_size = abs(last['Close'] - last['Open'])
     lower_wick = last['Open'] - last['Low'] if last['Open'] > last['Close'] else last['Close'] - last['Low']
-    upper_wick = last['High'] - last['Close'] if last['Open'] < last['Close'] else last['High'] - last['Open'
+    upper_wick = last['High'] - last['Close'] if last['Open'] < last['Close'] else last['High'] - last['Open']
         if now.minute % 5 != 4 or now.second < 45:
         return
     logger.info("Final confirmation window is open. Checking pending signals...")
@@ -496,3 +496,4 @@ def main() -> None:
 if __name__ == '__main__':
     main()
     
+
