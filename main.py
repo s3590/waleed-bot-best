@@ -257,7 +257,6 @@ async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TY
                "\n".join([f"- {key.replace('_', ' ').title()}: {value}" for key, value in params.items()]))
     await update.message.reply_text(message, parse_mode='Markdown')
     return SELECTING_ACTION
-
 async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -> dict or None:
     try:
         data = await fetch_historical_data(pair, 100)
@@ -447,8 +446,7 @@ def main() -> None:
         entry_points=[CommandHandler('start', start)],
         states={
             SELECTING_ACTION: [
-                MessageHandler(filters.Regex(r'^(حالة البوت:)'), toggle_bot_status),
-                MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
+                                MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
                 MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
                 MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
                 MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
@@ -461,8 +459,10 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^🔬 فحص اتصال API$'), check_api_connection),
                 MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start),
             ],
-            SETTING_CONFIDENCE: [MessageHandler(filters.Regex(r'ال
-عودة إلى الإعدادات'), settings_menu), MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)],
+            SETTING_CONFIDENCE: [
+                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), 
+                MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)
+            ],
             SETTING_INDICATOR: [
                 MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
                 MessageHandler(filters.Regex(r'^♻️ إعادة تعيين الكل للإعدادات الافتراضية$'), reset_indicators_to_default),
@@ -485,3 +485,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+    
