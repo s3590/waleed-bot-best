@@ -372,8 +372,18 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
         patterns['sell'] += 1
     body_size = abs(last['Close'] - last['Open'])
     lower_wick = last['Open'] - last['Low'] if last['Open'] > last['Close'] else last['Close'] - last['Low']
-    upper_wick = last['High'] - last['Close'] if last['Open'] < last['Close'] else last['High'] - last['Open']
-     = await fetch_historical_data(pair, "15min", 50)
+    upper_wick = last['High'] - last['Close'] if last['Open'] < last['Close'] else last['High'] - last['Open'
+        if now.minute % 5 != 4 or now.second < 45:
+        return
+    logger.info("Final confirmation window is open. Checking pending signals...")
+    for pair, signal_info in list(pending_signals.items()):
+        try:
+            time_since_signal = (now - signal_info['timestamp']).total_seconds()
+            if time_since_signal < 60: continue
+            data_m5 = await fetch_historical_data(pair, "5min", 50)
+            if data_m5.empty: raise Exception("Failed to fetch M5 data for final confirmation.")
+            strength_m5 = await analyze_signal_strength(data_m5)
+            data_m15 = await fetch_historical_data(pair, "15min", 50)
             if data_m15.empty: raise Exception("Failed to fetch M15 data for trend filter.")
             
             m15_ema_period = bot_state.get('indicator_params', {}).get('m15_ema_period', 20)
@@ -386,7 +396,6 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
             elif signal_info['direction'] == 'هبوط' and last_close_m15 < ema_m15:
                 m15_trend_ok = True
 
-            # 3. القرار النهائي
             confirmed = False
             final_confidence_threshold = bot_state.get('final_confidence', 3)
 
@@ -396,7 +405,6 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
                 elif signal_info['direction'] == 'هبوط' and strength_m5['sell'] >= final_confidence_threshold and strength_m5['buy'] == 0:
                     confirmed = True
 
-            # 4. إرسال النتيجة
             if confirmed:
                 confirmation_text = ( "✅✅✅   تــأكــيــد الــدخــول   ✅✅✅\n\n"
                                      f"الزوج: {pair} OTC\n"
@@ -423,7 +431,6 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
                     logger.error(f"Could not delete message for canceled signal {pair}: {del_e}")
                 del pending_signals[pair]
 
-# --- إعداد وتشغيل البوت ---
 def main() -> None:
     if not all([TOKEN, CHAT_ID, TWELVE_DATA_API_KEY]):
         logger.critical("One or more environment variables are missing (TOKEN, CHAT_ID, or API_KEY).")
@@ -489,4 +496,3 @@ def main() -> None:
 if __name__ == '__main__':
     main()
     
-
