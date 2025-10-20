@@ -35,6 +35,7 @@ DEFAULT_SETTINGS = {
     'running': False, 'selected_pairs': [],
     'initial_confidence': 2,
     'final_confidence': 3,
+    'macd_strategy': 'dynamic',  # 'dynamic' or 'simple' - الإضافة الجديدة
     'indicator_params': {
         'rsi_period': 14, 'macd_fast': 12, 'macd_slow': 26, 'macd_signal': 9,
         'bollinger_period': 20, 'stochastic_period': 14, 'atr_period': 14, 'adx_period': 14
@@ -76,7 +77,8 @@ def load_bot_settings():
     bot_state['twelve_data_api_key'] = TWELVE_DATA_API_KEY
 
 # --- حالات المحادثة ---
-(SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, SETTING_INDICATOR, AWAITING_VALUE) = range(6)
+(SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, 
+ SETTING_INDICATOR, AWAITING_VALUE, SETTING_MACD_STRATEGY) = range(7)
 
 # --- واجهة المستخدم ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -145,12 +147,35 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         [KeyboardButton("تحديد عتبة الإشارة الأولية")],
         [KeyboardButton("تحديد عتبة التأكيد النهائي")],
         [KeyboardButton("تعديل قيم المؤشرات")],
+        [KeyboardButton("📊 استراتيجية الماكد")], # الزر الجديد
         [KeyboardButton("🔬 فحص اتصال API")],
         [KeyboardButton("العودة إلى القائمة الرئيسية")]
     ]
     reply_markup = ReplyKeyboardMarkup(settings_keyboard, resize_keyboard=True)
     await update.message.reply_text("اختر الإعداد الذي تريد تعديله:", reply_markup=reply_markup)
     return SETTINGS_MENU
+
+async def set_macd_strategy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    current_strategy = bot_state.get('macd_strategy', 'dynamic')
+    message = "اختر استراتيجية الماكد التي تفضلها:"
+    keyboard = [
+        [KeyboardButton(f"🟢 ديناميكي (جودة عالية) {'✅' if current_strategy == 'dynamic' else ''}")],
+        [KeyboardButton(f"🟡 بسيط (كمية أكبر) {'✅' if current_strategy == 'simple' else ''}")],
+        [KeyboardButton("العودة إلى الإعدادات")]
+    ]
+    await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return SETTING_MACD_STRATEGY
+
+async def set_macd_strategy_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    choice = update.message.text
+    if "ديناميكي" in choice:
+        bot_state['macd_strategy'] = 'dynamic'
+    elif "بسيط" in choice:
+        bot_state['macd_strategy'] = 'simple'
+    
+    save_bot_settings()
+    await update.message.reply_text(f"تم تحديث استراتيجية الماكد إلى: {bot_state['macd_strategy']}")
+    return await settings_menu(update, context)
 
 async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     api_key = bot_state.get('twelve_data_api_key')
@@ -248,15 +273,20 @@ async def receive_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     pairs_str = ", ".join(bot_state.get('selected_pairs', [])) or "لا يوجد"
     params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
+    macd_strategy = bot_state.get('macd_strategy', 'dynamic')
+    strategy_text = "ديناميكي (جودة عالية)" if macd_strategy == 'dynamic' else "بسيط (كمية أكبر)"
+
     message = (f"**⚙️ الإعدادات الحالية**\n\n"
                f"**الفريم:** 5 دقائق\n"
                f"**الأزواج:** {pairs_str}\n"
                f"**عتبة الإشارة الأولية:** {bot_state.get('initial_confidence', 2)} مؤشرات\n"
-               f"**عتبة التأكيد النهائي:** {bot_state.get('final_confidence', 3)} مؤشرات\n\n"
+               f"**عتبة التأكيد النهائي:** {bot_state.get('final_confidence', 3)} مؤشرات\n"
+               f"**استراتيجية الماكد:** {strategy_text}\n\n"
                f"**قيم المؤشرات:**\n" +
                "\n".join([f"- {key.replace('_', ' ').title()}: {value}" for key, value in params.items()]))
     await update.message.reply_text(message, parse_mode='Markdown')
     return SELECTING_ACTION
+
 async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -> dict or None:
     try:
         data = await fetch_historical_data(pair, 100)
@@ -332,7 +362,11 @@ async def fetch_historical_data(pair: str, outputsize: int = 100) -> pd.DataFram
 
 async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
-    if data.empty or len(data) < max(params.values()): return {'buy': 0, 'sell': 0}
+    macd_strategy = bot_state.get('macd_strategy', 'dynamic')
+
+    if data.empty or len(data) < max(params.values()): 
+        return {'buy': 0, 'sell': 0}
+
     data["rsi"] = ta.momentum.RSIIndicator(data["Close"], window=params.get('rsi_period', 14)).rsi()
     macd = ta.trend.MACD(data["Close"], window_fast=params.get('macd_fast', 12), window_slow=params.get('macd_slow', 26), window_sign=params.get('macd_signal', 9))
     data["macd"], data["macd_signal"] = macd.macd(), macd.macd_signal()
@@ -340,69 +374,22 @@ async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     data["bb_h"], data["bb_l"] = bollinger.bollinger_hband(), bollinger.bollinger_lband()
     stoch = ta.momentum.StochasticOscillator(data["High"], data["Low"], data["Close"], window=params.get('stochastic_period', 14))
     data["stoch_k"], data["stoch_d"] = stoch.stoch(), stoch.stoch_signal()
+    
     data.dropna(inplace=True)
-    if data.empty or len(data) < 2: return {'buy': 0, 'sell': 0}
-    last, prev = data.iloc[-1], data.iloc[-2]
-    buy_signals, sell_signals = 0, 0
-    if last["rsi"] < 35: buy_signals += 1
-    if last["rsi"] > 30 and prev["rsi"] <= 30: buy_signals += 1
-    if last["rsi"] > 65: sell_signals += 1
-    if last["rsi"] < 70 and prev["rsi"] >= 70: sell_signals += 1
-    if last["macd"] > last["macd_signal"] and last["macd"] < 0: buy_signals += 1
-    if last["macd"] > last["macd_signal"] and prev["macd"] <= prev["macd_signal"]: buy_signals += 1
-    if last["macd"] < last["macd_signal"] and last["macd"] > 0: sell_signals += 1
-    if last["macd"] < last["macd_signal"] and prev["macd"] >= prev["macd_signal"]: sell_signals += 1
-    if last["Close"] < last["bb_l"]: buy_signals += 1
-    if last["Close"] > last["bb_h"]: sell_signals += 1
-    if last["stoch_k"] > last["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
-    if last["stoch_k"] > last["stoch_d"] and prev["stoch_k"] <= prev["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
-    if last["stoch_k"] < last["stoch_d"] and last["stoch_k"] > 70: sell_signals += 1
-    if last["stoch_k"] < last["stoch_d"] and prev["stoch_k"] >= prev["stoch_d"] and last["stoch_k"] > 70: sell_signals += 1
-    return {'buy': buy_signals, 'sell': sell_signals}
+    if data.empty or len(data) < 2: 
+        return {'buy': 0, 'sell': 0}
 
-async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
-    if not bot_state.get("running") or not bot_state.get('selected_pairs'): return
-    now = datetime.now()
-    if now.minute % 5 != 0: return
-    logger.info("Checking for potential signals...")
-    for pair in bot_state.get('selected_pairs', []):
-        if pair in pending_signals: continue
-        try:
-            data = await fetch_historical_data(pair)
-            if data.empty: continue
-            strength = await analyze_signal_strength(data)
-            buy_strength, sell_strength = strength['buy'], strength['sell']
-            direction = None
-            if buy_strength >= bot_state.get('initial_confidence', 2) and sell_strength == 0: direction = "صعود"
-            elif sell_strength >= bot_state.get('initial_confidence', 2) and buy_strength == 0: direction = "هبوط"
-            if direction:
-                entry_time = (now + timedelta(minutes=5) - timedelta(seconds=now.second)).strftime("%H:%M:00")
-                direction_emoji = "🟢" if direction == "صعود" else "🔴"
-                direction_arrow = "⬆️" if direction == "صعود" else "⬇️"
-                signal_text = (f"   🔔   {direction_emoji} {{  اشارة   {direction}  }} {direction_emoji}   🔔       \n"
-                               f"           📊 الزوج :  {pair} OTC\n"
-                               f"           🕛  الفريم :  M5\n"
-                               f"           📉  الاتجاه:  {direction} {direction_arrow}\n"
-                               f"           ⏳ وقت الدخول : {entry_time}\n\n"
-                               f"               🔍 {{  انتظر   التاكيد   }}")
-                sent_message = await context.bot.send_message(chat_id=CHAT_ID, text=signal_text)
-                pending_signals[pair] = {'direction': direction, 'message_id': sent_message.message_id, 'timestamp': now}
-                logger.info(f"Potential signal found for {pair}. Awaiting confirmation.")
-            await asyncio.sleep(5)
-        except Exception as e:
-            await send_error_to_telegram(context, f"Error in check_for_signals for {pair}: {e}")
-
-async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
-    if not bot_state.get("running") or not pending_signals: return
-    now = datetime.now()
-    for pair, signal_info in list(pending_signals.items()):
-        try:
-            time_since_signal = (now - signal_info['timestamp']).total_seconds()
-            if 30 < time_since_signal < 75:
+    last, prev = da
+    second > 45:
+                # هذا هو وقت اتخاذ القرار النهائي
                 data = await fetch_historical_data(pair, 50)
-                if data.empty: continue
+                if data.empty:
+                    # إذا فشل جلب البيانات، نلغي الصفقة كإجراء احترازي
+                    raise Exception("Failed to fetch data for final confirmation.")
+
                 strength = await analyze_signal_strength(data)
                 buy_strength, sell_strength = strength['buy'], strength['sell']
+                
                 confirmed = False
                 if signal_info['direction'] == 'صعود' and buy_strength >= bot_state.get('final_confidence', 3) and sell_strength == 0:
                     confirmed = True
@@ -416,51 +403,71 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
                                          f"الزوج: {pair} OTC\n"
                                          "الاتجاه: هبوط ⬇️\n\n"
                                          "          🔥 ادخــــــــل الآن 🔥")
+                
+                # إرسال التأكيد أو الإلغاء
                 if confirmed:
                     await context.bot.delete_message(chat_id=CHAT_ID, message_id=signal_info['message_id'])
                     await context.bot.send_message(chat_id=CHAT_ID, text=confirmation_text)
                     logger.info(f"Signal CONFIRMED for {pair}")
-                    del pending_signals[pair]
-                    continue
-            if time_since_signal >= 75:
-                cancellation_text = ("❌❌❌   إلــغــاء الــصــفــقــة   ❌❌❌\n\n"
-                                     f"الزوج: {pair} OTC\n\n"
-                                     "الشروط لم تعد مثالية، لا تقم بالدخول.")
-                await context.bot.delete_message(chat_id=CHAT_ID, message_id=signal_info['message_id'])
-                await context.bot.send_message(chat_id=CHAT_ID, text=cancellation_text)
-                logger.info(f"Signal CANCELED for {pair} due to timeout.")
+                else:
+                    cancellation_text = ("❌❌❌   إلــغــاء الــصــفــقــة   ❌❌❌\n\n"
+                                         f"الزوج: {pair} OTC\n\n"
+                                         "الشروط لم تعد مثالية، لا تقم بالدخول.")
+                    await context.bot.delete_message(chat_id=CHAT_ID, message_id=signal_info['message_id'])
+                    await context.bot.send_message(chat_id=CHAT_ID, text=cancellation_text)
+                    logger.info(f"Signal CANCELED for {pair} due to weak confirmation.")
+                
+                # حذف الإشارة من قائمة الانتظار بعد معالجتها
                 del pending_signals[pair]
+
         except Exception as e:
             await send_error_to_telegram(context, f"Error in confirm_pending_signals for {pair}: {e}")
-            if pair in pending_signals: del pending_signals[pair]
+            if pair in pending_signals:
+                try:
+                    await context.bot.delete_message(chat_id=CHAT_ID, message_id=pending_signals[pair]['message_id'])
+                except Exception as del_e:
+                    logger.error(f"Could not delete message for canceled signal {pair}: {del_e}")
+                del pending_signals[pair]
 
+# --- إعداد وتشغيل البوت ---
 def main() -> None:
     if not all([TOKEN, CHAT_ID, TWELVE_DATA_API_KEY]):
         logger.critical("One or more environment variables are missing (TOKEN, CHAT_ID, or API_KEY).")
         return
+        
     load_bot_settings()
+    
     persistence = PicklePersistence(filepath="bot_persistence")
+    
     application = Application.builder().token(TOKEN).persistence(persistence).build()
+    
     application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair'))
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-
-    SELECTING_ACTION: [
-        MessageHandler(filters.Regex(r'^(حالة البوت:)'), toggle_bot_status),
-        MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
-        MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
-        MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
-        MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
-    ],
-    SELECTING_PAIR: [MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start), MessageHandler(filters.TEXT & ~filters.COMMAND, toggle_pair)],
-    
+            SELECTING_ACTION: [
+                MessageHandler(filters.Regex(r'^(حالة البوت:)'), toggle_bot_status),
+                MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
+                MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
+                MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
+                MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
+            ],
+            SELECTING_PAIR: [
+                MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start), 
+                MessageHandler(filters.TEXT & ~filters.COMMAND, toggle_pair)
+            ],
             SETTINGS_MENU: [
                 MessageHandler(filters.Regex(r'^تحديد عتبة الإشارة الأولية$'), set_confidence_menu),
                 MessageHandler(filters.Regex(r'^تحديد عتبة التأكيد النهائي$'), set_confidence_menu),
                 MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
+                MessageHandler(filters.Regex(r'^📊 استراتيجية الماكد$'), set_macd_strategy_menu),
                 MessageHandler(filters.Regex(r'^🔬 فحص اتصال API$'), check_api_connection),
                 MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start),
+            ],
+            SETTING_MACD_STRATEGY: [
+                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, set_macd_strategy_value)
             ],
             SETTING_CONFIDENCE: [
                 MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), 
@@ -478,7 +485,6 @@ def main() -> None:
     )
     application.add_handler(conv_handler)
     
-    # إعادة جدولة المهام إذا كان البوت يعمل قبل إعادة التشغيل
     if bot_state.get('running'):
         application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
         application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check')
