@@ -445,13 +445,16 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            SELECTING_ACTION: [
-                                MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
-                MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
-                MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
-                MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
-            ],
-            SELECTING_PAIR: [MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start), MessageHandler(filters.TEXT & ~filters.COMMAND, toggle_pair)],
+
+    SELECTING_ACTION: [
+        MessageHandler(filters.Regex(r'^(حالة البوت:)'), toggle_bot_status),
+        MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
+        MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
+        MessageHandler(filters.Regex(r'^عرض الإعدادات الحالية$'), view_current_settings),
+        MessageHandler(filters.Regex(r'^🔍 اكتشاف الأزواج النشطة$'), find_active_pairs_command),
+    ],
+    SELECTING_PAIR: [MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start), MessageHandler(filters.TEXT & ~filters.COMMAND, toggle_pair)],
+    
             SETTINGS_MENU: [
                 MessageHandler(filters.Regex(r'^تحديد عتبة الإشارة الأولية$'), set_confidence_menu),
                 MessageHandler(filters.Regex(r'^تحديد عتبة التأكيد النهائي$'), set_confidence_menu),
