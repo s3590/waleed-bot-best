@@ -448,8 +448,7 @@ async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
                 entry_time = (now + timedelta(minutes=5)).strftime("%H:%M:00")
                 direction_emoji = "🟢" if direction == "صعود" else "🔴"
                 direction_arrow = "⬆️" if direction == "صعود" else "⬇️"
-                signal_text = (f"   🔔   
-{direction_emoji} {{  اشارة   {direction}  }} {direction_emoji}   🔔       \n"
+                signal_text = (f"   🔔   {direction_emoji} {{  اشارة   {direction}  }} {direction_emoji}   🔔       \n"
                                f"           📊 الزوج :  {pair} OTC\n"
                                f"           🕛  الفريم :  M5\n"
                                f"           📉  الاتجاه:  {direction} {direction_arrow}\n"
@@ -606,4 +605,5 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
 
