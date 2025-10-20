@@ -68,6 +68,7 @@ def load_bot_settings():
     try:
         with open(STATE_FILE, 'r') as f:
             loaded_settings = json.load(f)
+            # دمج الإعدادات مع ضمان وجود كل المفاتيح الافتراضية
             bot_state.update(DEFAULT_SETTINGS)
             bot_state.update(loaded_settings)
             if 'indicator_params' not in bot_state:
@@ -106,11 +107,13 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
         [KeyboardButton("عرض الإعدادات الحالية")]
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
+    # تجنب إرسال القائمة مرتين عند بدء التشغيل
     is_start_command = update.message.text and update.message.text.startswith('/start')
+    target_message = update.callback_query.message if update.callback_query else update.message
     if not is_start_command:
-        await update.message.reply_text(message_text, reply_markup=reply_markup)
+        await target_message.reply_text(message_text, reply_markup=reply_markup)
     else:
-        await update.message.reply_text("القائمة الرئيسية:", reply_markup=reply_markup)
+        await target_message.reply_text("القائمة الرئيسية:", reply_markup=reply_markup)
     return SELECTING_ACTION
 
 async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -230,7 +233,7 @@ async def set_confidence_value(update: Update, context: ContextTypes.DEFAULT_TYP
     save_bot_settings()
     title = "الإشارة الأولية" if context.user_data.get('setting_type') == 'initial' else "التأكيد النهائي"
     await update.message.reply_text(f"تم تحديث عتبة {title} إلى: {bot_state.get(setting_key)}")
-    update.message.text = f"تحديد عتبة {title}"
+    update.message.text = f"تحديد عتبة {title}" # لإعادة عرض نفس القائمة
     return await set_confidence_menu(update, context)
 
 async def set_indicator_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -279,7 +282,7 @@ async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TY
     macd_strategy = bot_state.get('macd_strategy', 'dynamic')
     strategy_text = "ديناميكي (جودة عالية)" if macd_strategy == 'dynamic' else "بسيط (كمية أكبر)"
     message = (f"**⚙️ الإعدادات الحالية**\n\n"
-               f"**الفريم:** 5 دقائق\n"
+               f"**الفريم:** 5 دقائق (مع فلتر 15 دقيقة)\n"
                f"**الأزواج:** {pairs_str}\n"
                f"**عتبة الإشارة الأولية:** {bot_state.get('initial_confidence', 2)} مؤشرات\n"
                f"**عتبة التأكيد النهائي:** {bot_state.get('final_confidence', 3)} مؤشرات\n"
@@ -310,7 +313,7 @@ async def find_active_pairs_command(update: Update, context: ContextTypes.DEFAUL
             logger.info(f"Analyzing activity for pair: {pair}")
             result = await analyze_pair_activity(pair, context)
             if result: all_results.append(result)
-            await asyncio.sleep(8)
+            await asyncio.sleep(8) # احترام حدود الـ API
         except Exception as e:
             await send_error_to_telegram(context, f"Error during active pair discovery for {pair}: {e}")
             await asyncio.sleep(8)
@@ -366,58 +369,166 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
     patterns = {'buy': 0, 'sell': 0}
     if len(data) < 2: return patterns
     last, prev = data.iloc[-1], data.iloc[-2]
+    # Engulfing Patterns
     if prev['Close'] < prev['Open'] and last['Close'] > last['Open'] and last['Close'] > prev['Open'] and last['Open'] < prev['Close']:
         patterns['buy'] += 1
     if prev['Close'] > prev['Open'] and last['Close'] < last['Open'] and last['Close'] < prev['Open'] and last['Open'] > prev['Close']:
         patterns['sell'] += 1
+    # Hammer/Shooting Star
     body_size = abs(last['Close'] - last['Open'])
-    lower_wick = last['Open'] - last['Low'] if last['Open'] > last['Close'] else last['Close'] - last['Low']
-    upper_wick = last['High'] - last['Close'] if last['Open'] < last['Close'] else last['High'] - last['Open']
-        if now.minute % 5 != 4 or now.second < 45:
+    if body_size == 0: body_size = 0.00001 # Avoid division by zero
+    lower_wick = (last['Open'] if last['Open'] > last['Close'] else last['Close']) - last['Low']
+    upper_wick = last['High'] - (last['Close'] if last['Open'] < last['Close'] else last['Open'])
+    if lower_wick > body_size * 2 and upper_wick < body_size:
+         patterns['buy'] += 1
+    if upper_wick > body_size * 2 and lower_wick < body_size:
+        patterns['sell'] += 1
+    return patterns
+
+async def analyze_signal_strength(data: pd.DataFrame) -> dict:
+    params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
+    macd_strategy = bot_state.get('macd_strategy', 'dynamic')
+    if data.empty or len(data) < max(params.values()): return {'buy': 0, 'sell': 0}
+    # Calculate indicators
+    data["rsi"] = ta.momentum.RSIIndicator(data["Close"], window=params.get('rsi_period', 14)).rsi()
+    macd = ta.trend.MACD(data["Close"], window_fast=params.get('macd_fast', 12), window_slow=params.get('macd_slow', 26), window_sign=params.get('macd_signal', 9))
+    data["macd"], data["macd_signal"] = macd.macd(), macd.macd_signal()
+    bollinger = ta.volatility.BollingerBands(data["Close"], window=params.get('bollinger_period', 20))
+    data["bb_h"], data["bb_l"] = bollinger.bollinger_hband(), bollinger.bollinger_lband()
+    stoch = ta.momentum.StochasticOscillator(data["High"], data["Low"], data["Close"], window=params.get('stochastic_period', 14))
+    data["stoch_k"], data["stoch_d"] = stoch.stoch(), stoch.stoch_signal()
+    data.dropna(inplace=True)
+    if data.empty or len(data) < 2: return {'buy': 0, 'sell': 0}
+    last, prev = data.iloc[-1], data.iloc[-2]
+    buy_signals, sell_signals = 0, 0
+    # RSI
+    if last["rsi"] < 35: buy_signals += 1
+    if last["rsi"] > 30 and prev["rsi"] <= 30: buy_signals += 1
+    if last["rsi"] > 65: sell_signals += 1
+    if last["rsi"] < 70 and prev["rsi"] >= 70: sell_signals += 1
+    # MACD
+    is_cross_up = last["macd"] > last["macd_signal"] and prev["macd"] <= prev["macd_signal"]
+    is_cross_down = last["macd"] < last["macd_signal"] and prev["macd"] >= prev["macd_signal"]
+    if macd_strategy == 'dynamic':
+        if is_cross_up and last["macd"] < 0: buy_signals += 1
+        if is_cross_down and last["macd"] > 0: sell_signals += 1
+    else: # simple
+        if is_cross_up: buy_signals += 1
+        if is_cross_down: sell_signals += 1
+    # Bollinger Bands
+    if last["Close"] < last["bb_l"]: buy_signals += 1
+    if last["Close"] > last["bb_h"]: sell_signals += 1
+    # Stochastic
+    if last["stoch_k"] > last["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
+    if last["stoch_k"] < last["stoch_d"] and last["stoch_k"] > 70: sell_signals += 1
+    # Candlestick Patterns
+    candle_patterns = get_candlestick_patterns(data)
+    buy_signals += candle_patterns['buy']
+    sell_signals += candle_patterns['sell']
+    return {'buy': buy_signals, 'sell': sell_signals}
+
+async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
+    if not bot_state.get("running") or not bot_state.get('selected_pairs'): return
+    now = datetime.now()
+    if now.minute % 5 != 0: return # يعمل مرة كل 5 دقائق
+    logger.info("Checking for potential signals on M5...")
+    for pair in bot_state.get('selected_pairs', []):
+        if pair in pending_signals: continue
+        try:
+            data = await fetch_historical_data(pair, "5min", 100)
+            if data.empty: continue
+            strength = await analyze_signal_strength(data)
+            buy_strength, sell_strength = strength['buy'], strength['sell']
+            direction = None
+            if buy_strength >= bot_state.get('initial_confidence', 2) and sell_strength == 0:
+                direction = "صعود"
+            elif sell_strength >= bot_state.get('initial_confidence', 2) and buy_strength == 0:
+                direction = "هبوط"
+            if direction:
+                entry_time = (now + timedelta(minutes=5)).strftime("%H:%M:00")
+                direction_emoji = "🟢" if direction == "صعود" else "🔴"
+                direction_arrow = "⬆️" if direction == "صعود" else "⬇️"
+                signal_text = (f"   🔔   
+{direction_emoji} {{  اشارة   {direction}  }} {direction_emoji}   🔔       \n"
+                               f"           📊 الزوج :  {pair} OTC\n"
+                               f"           🕛  الفريم :  M5\n"
+                               f"           📉  الاتجاه:  {direction} {direction_arrow}\n"
+                               f"           ⏳ وقت الدخول : {entry_time}\n\n"
+                               f"               🔍 {{  انتظر   التاكيد   }}")
+                sent_message = await context.bot.send_message(chat_id=CHAT_ID, text=signal_text)
+                pending_signals[pair] = {'direction': direction, 'message_id': sent_message.message_id, 'timestamp': now}
+                logger.info(f"Potential signal found for {pair}. Awaiting confirmation.")
+            await asyncio.sleep(5) # فاصل بسيط بين طلبات الأزواج
+        except Exception as e:
+            await send_error_to_telegram(context, f"Error in check_for_signals for {pair}: {e}")
+
+async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
+    if not bot_state.get("running") or not pending_signals:
         return
+    now = datetime.now()
+    
+    # نافذة التأكيد: آخر 15 ثانية من شمعة الـ 5 دقائق
+    if now.minute % 5 != 4 or now.second < 45:
+        return
+
     logger.info("Final confirmation window is open. Checking pending signals...")
     for pair, signal_info in list(pending_signals.items()):
         try:
+            # تجاهل الإشارات التي لم يمر عليها دقيقة على الأقل
             time_since_signal = (now - signal_info['timestamp']).total_seconds()
-            if time_since_signal < 60: continue
-            data_m5 = await fetch_historical_data(pair, "5min", 50)
-            if data_m5.empty: raise Exception("Failed to fetch M5 data for final confirmation.")
-            strength_m5 = await analyze_signal_strength(data_m5)
+            if time_since_signal < 60:
+                continue
+
+            # 1. فلتر الاتجاه باستخدام M15
             data_m15 = await fetch_historical_data(pair, "15min", 50)
-            if data_m15.empty: raise Exception("Failed to fetch M15 data for trend filter.")
+            if data_m15.empty:
+                logger.warning(f"Could not fetch M15 data for {pair}, skipping trend filter.")
+                m15_trend_ok = True # السماح بالمرور إذا فشل جلب البيانات لتجنب إلغاء إشارة جيدة
+            else:
+                m15_ema_period = bot_state.get('indicator_params', {}).get('m15_ema_period', 20)
+                data_m15['ema'] = ta.trend.EMAIndicator(data_m15['Close'], window=m15_ema_period).ema_indicator()
+                last_close_m15 = data_m15['Close'].iloc[-1]
+                last_ema_m15 = data_m15['ema'].iloc[-1]
+                
+                m15_trend_ok = False
+                if signal_info['direction'] == 'صعود' and last_close_m15 > last_ema_m15:
+                    m15_trend_ok = True
+                elif signal_info['direction'] == 'هبوط' and last_close_m15 < last_ema_m15:
+                    m15_trend_ok = True
+
+            # 2. التأكيد النهائي باستخدام M5
+            data_m5 = await fetch_historical_data(pair, "5min", 50)
+            if data_m5.empty:
+                raise Exception("Failed to fetch M5 data for final confirmation.")
+
+            strength_m5 = await analyze_signal_strength(data_m5)
+            buy_strength, sell_strength = strength_m5['buy'], strength_m5['sell']
             
-            m15_ema_period = bot_state.get('indicator_params', {}).get('m15_ema_period', 20)
-            ema_m15 = ta.trend.EMAIndicator(data_m15['Close'], window=m15_ema_period).ema_indicator().iloc[-1]
-            last_close_m15 = data_m15['Close'].iloc[-1]
-
-            m15_trend_ok = False
-            if signal_info['direction'] == 'صعود' and last_close_m15 > ema_m15:
-                m15_trend_ok = True
-            elif signal_info['direction'] == 'هبوط' and last_close_m15 < ema_m15:
-                m15_trend_ok = True
-
             confirmed = False
-            final_confidence_threshold = bot_state.get('final_confidence', 3)
+            final_confidence = bot_state.get('final_confidence', 3)
 
             if m15_trend_ok:
-                if signal_info['direction'] == 'صعود' and strength_m5['buy'] >= final_confidence_threshold and strength_m5['sell'] == 0:
+                if signal_info['direction'] == 'صعود' and buy_strength >= final_confidence and sell_strength == 0:
                     confirmed = True
-                elif signal_info['direction'] == 'هبوط' and strength_m5['sell'] >= final_confidence_threshold and strength_m5['buy'] == 0:
+                elif signal_info['direction'] == 'هبوط' and sell_strength >= final_confidence and buy_strength == 0:
                     confirmed = True
-
+            
+            # 3. إرسال النتيجة النهائية
+            await context.bot.delete_message(chat_id=CHAT_ID, message_id=signal_info['message_id'])
+            
             if confirmed:
-                confirmation_text = ( "✅✅✅   تــأكــيــد الــدخــول   ✅✅✅\n\n"
+                confirmation_text = (f"✅✅✅   تــأكــيــد الــدخــول   ✅✅✅\n\n"
                                      f"الزوج: {pair} OTC\n"
                                      f"الاتجاه: {signal_info['direction']} {'⬆️' if signal_info['direction'] == 'صعود' else '⬇️'}\n\n"
-                                     "          🔥 ادخــــــــل الآن 🔥")
-                await context.bot.edit_message_text(chat_id=CHAT_ID, message_id=signal_info['message_id'], text=confirmation_text)
+                                     f"          🔥 ادخــــــــل الآن 🔥")
+                await context.bot.send_message(chat_id=CHAT_ID, text=confirmation_text)
                 logger.info(f"Signal CONFIRMED for {pair}")
             else:
                 reason = "لم يتوافق مع اتجاه M15" if not m15_trend_ok else "ضعف تأكيد M5"
-                cancellation_text = ("❌❌❌   إلــغــاء الــصــفــقــة   ❌❌❌\n\n"
+                cancellation_text = (f"❌❌❌   إلــغــاء الــصــفــقــة   ❌❌❌\n\n"
                                      f"الزوج: {pair} OTC\n\n"
                                      f"السبب: {reason}. لا تقم بالدخول.")
-                await context.bot.edit_message_text(chat_id=CHAT_ID, message_id=signal_info['message_id'], text=cancellation_text)
+                await context.bot.send_message(chat_id=CHAT_ID, text=cancellation_text)
                 logger.info(f"Signal CANCELED for {pair} due to: {reason}")
             
             del pending_signals[pair]
@@ -495,5 +606,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-    
 
