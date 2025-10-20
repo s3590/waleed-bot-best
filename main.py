@@ -372,7 +372,7 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
         patterns['sell'] += 1
     body_size = abs(last['Close'] - last['Open'])
     lower_wick = last['Open'] - last['Low'] if last['Open'] > last['Close'] else last['Close'] - last['Low']
-    upper_wick = last['High'] - last['Close'] if last['Open'] < last['Close'] else last['High'] - last['Open'
+    upper_wick = last['High'] - last['Close'] if last['Open'] < last['Close'] else last['High'] - last['Open']
      = await fetch_historical_data(pair, "15min", 50)
             if data_m15.empty: raise Exception("Failed to fetch M15 data for trend filter.")
             
@@ -489,3 +489,4 @@ def main() -> None:
 if __name__ == '__main__':
     main()
     
+
