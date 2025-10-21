@@ -64,27 +64,36 @@ def save_bot_settings():
 
 def load_bot_settings():
     global bot_state
+    # ابدأ دائمًا بالإعدادات الافتراضية كنقطة أساس
     bot_state = DEFAULT_SETTINGS.copy()
     try:
         with open(STATE_FILE, 'r') as f:
             loaded_settings = json.load(f)
-            # دمج الإعدادات مع ضمان وجود كل المفاتيح الافتراضية
-            bot_state.update(DEFAULT_SETTINGS)
+            
+            # قم بتحديث الحالة بالإعدادات المحفوظة من الملف
+            # هذا سيقوم بالكتابة فوق الإعدادات الافتراضية إذا كانت موجودة في الملف
             bot_state.update(loaded_settings)
-            if 'indicator_params' not in bot_state:
-                bot_state['indicator_params'] = DEFAULT_SETTINGS['indicator_params'].copy()
+
+            # هذا الجزء مهم لضمان أن إعدادات المؤشرات كاملة دائمًا
+            # حتى لو أضفت مؤشرًا جديدًا في المستقبل
+            if 'indicator_params' in loaded_settings:
+                # ادمج القيم المحفوظة فوق القيم الافتراضية لضمان وجود جميع المفاتيح
+                default_indicator_params = DEFAULT_SETTINGS['indicator_params'].copy()
+                default_indicator_params.update(loaded_settings['indicator_params'])
+                bot_state['indicator_params'] = default_indicator_params
             else:
-                default_params = DEFAULT_SETTINGS['indicator_params'].copy()
-                default_params.update(bot_state['indicator_params'])
-                bot_state['indicator_params'] = default_params
+                # إذا لم تكن 'indicator_params' موجودة في الملف المحفوظ، استخدم القيم الافتراضية
+                bot_state['indicator_params'] = DEFAULT_SETTINGS['indicator_params'].copy()
+
         logger.info("Bot settings loaded from file.")
     except (FileNotFoundError, json.JSONDecodeError):
         logger.warning("Settings file not found or invalid. Starting with default settings.")
-        save_bot_settings()
+        # لا حاجة للحفظ هنا، لأننا بدأنا بالفعل بالقيم الافتراضية
     
+    # قم دائمًا بتعيين المتغيرات الحساسة التي لا يتم حفظها في الملف
     bot_state['chat_id'] = CHAT_ID
     bot_state['twelve_data_api_key'] = TWELVE_DATA_API_KEY
-
+    
 # --- حالات المحادثة ---
 (SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, 
  SETTING_INDICATOR, AWAITING_VALUE, SETTING_MACD_STRATEGY) = range(7)
@@ -605,5 +614,6 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
 
 
