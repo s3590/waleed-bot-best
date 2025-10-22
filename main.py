@@ -298,7 +298,6 @@ async def view_current_settings(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(message, parse_mode='Markdown')
     return SELECTING_ACTION
 
-# --- *** الدالة الأساسية لجلب البيانات (مُعدلة لـ Polygon.io) *** ---
 async def fetch_historical_data(pair: str, interval: int, timeframe: str, limit: int = 150) -> pd.DataFrame:
     api_key = bot_state.get("polygon_api_key")
     if not api_key:
@@ -307,13 +306,13 @@ async def fetch_historical_data(pair: str, interval: int, timeframe: str, limit:
 
     polygon_ticker = f"C:{pair.replace('/', '')}"
     end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=20)
+    start_date = end_date - timedelta(days=30) # زيادة النطاق الزمني لضمان وجود بيانات كافية
 
     url = (f"https://api.polygon.io/v2/aggs/ticker/{polygon_ticker}/range/{interval}/{timeframe}/"
            f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=desc&limit={limit}&apiKey={api_key}")
 
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         data = response.json()
 
@@ -334,40 +333,49 @@ async def fetch_historical_data(pair: str, interval: int, timeframe: str, limit:
         logger.error(f"An unexpected error occurred in fetch_historical_data for {pair}: {e}")
         return pd.DataFrame()
 
+# --- *** الدالة المصححة مع فحص طول البيانات *** ---
 async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -> dict or None:
     try:
         data = await fetch_historical_data(pair, 5, "minute", 100)
-        if data is None or data.empty: return None
-        
         params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
-        if len(data) < max(params.get('adx_period', 14), params.get('atr_period', 14)): return None
         
+        # --- الإصلاح هنا ---
+        required_length = max(params.get('adx_period', 14), params.get('atr_period', 14))
+        if data is None or data.empty or len(data) < required_length:
+            logger.warning(f"Not enough data for {pair} to analyze activity. Got {len(data) if not data.empty else 0}, need {required_length}.")
+            return None
+        # --- نهاية الإصلاح ---
+
         adx_value = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=params.get('adx_period', 14)).adx().iloc[-1]
         atr_value = ta.volatility.AverageTrueRange(data['High'], data['Low'], data['Close'], window=params.get('atr_period', 14)).average_true_range().iloc[-1]
         atr_percent = (atr_value / data['Close'].iloc[-1]) * 100
         return {'pair': pair, 'adx': adx_value, 'atr_percent': atr_percent}
     except Exception as e:
-        await send_error_to_telegram(context, f"Error analyzing activity for {pair}: {e}")
+        # إرسال الخطأ الحقيقي بدلاً من رسالة عامة
+        await send_error_to_telegram(context, f"Error in analyze_pair_activity for {pair}: {e}")
         return None
 
 async def find_active_pairs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("🔍 جاري تحليل نشاط السوق... قد تستغرق العملية عدة دقائق لاحترام حدود الـ API.", reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
     all_results = []
     
-    for i in range(0, len(USER_DEFINED_PAIRS), 4):
-        batch = USER_DEFINED_PAIRS[i:i+4]
+    pairs_to_check = USER_DEFINED_PAIRS.copy()
+    
+    for i in range(0, len(pairs_to_check), 4):
+        batch = pairs_to_check[i:i+4]
         tasks = [analyze_pair_activity(pair, context) for pair in batch]
         results = await asyncio.gather(*tasks)
         for res in results:
             if res: all_results.append(res)
         
-        if i + 4 < len(USER_DEFINED_PAIRS):
+        if i + 4 < len(pairs_to_check):
             logger.info("Waiting for 60 seconds to respect API rate limit...")
             await asyncio.sleep(60)
 
     if not all_results:
-        return await send_main_menu(update, context, "عذرًا، لم أتمكن من تحليل السوق. تحقق من سجلات الأخطاء.")
-    
+        await send_main_menu(update, context, "لم يتم العثور على أزواج نشطة حاليًا (قد يكون السوق مغلقًا).")
+        return SELECTING_ACTION
+
     all_results.sort(key=lambda x: x.get('adx', 0) + (x.get('atr_percent', 0) * 20), reverse=True)
     top_pairs = all_results[:4]
     message = "📈 **أفضل الأزواج النشطة للتداول الآن:**\n\n"
@@ -406,8 +414,7 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
     body_size = abs(last['Close'] - last['Open'])
     if body_size == 0: body_size = 0.00001
     lower_wick = (last['Open'] if last['Open'] > last['Close'] else last['Close']) - last['Low']
-    upper_wick = last['High'] - (last['Close']
-if last['Open'] < last['Close'] else last['Open'])
+    upper_wick = last['High'] - (last['Close'] if last['Open'] < last['Close'] else last['Open'])
     if lower_wick > body_size * 2 and upper_wick < body_size:
          patterns['buy'] += 1
     if upper_wick > body_size * 2 and lower_wick < body_size:
@@ -417,12 +424,16 @@ if last['Open'] < last['Close'] else last['Open'])
 async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
     macd_strategy = bot_state.get('macd_strategy', 'dynamic')
-    if data is None or data.empty or len(data) < max(params.values()): return {'buy': 0, 'sell': 0}
     
-    # Calculate indicators
+    required_length = max(params.values())
+    if data is None or data.empty or len(data) < required_length:
+        logger.warning(f"Not enough data for signal analysis. Got {len(data) if not data.empty else 0}, need {required_length}.")
+        return {'buy': 0, 'sell': 0}
+    
     data["rsi"] = ta.momentum.RSIIndicator(data["Close"], window=params.get('rsi_period', 14)).rsi()
     macd = ta.trend.MACD(data["Close"], window_fast=params.get('macd_fast', 12), window_slow=params.get('macd_slow', 26), window_sign=params.get('macd_signal', 9))
-    data["macd"], data["macd_signal"] = macd.macd(), macd.macd_signal()
+    data["macd"], data["macd_signal"] = macd.
+macd(), macd.macd_signal()
     bollinger = ta.volatility.BollingerBands(data["Close"], window=params.get('bollinger_period', 20))
     data["bb_h"], data["bb_l"] = bollinger.bollinger_hband(), bollinger.bollinger_lband()
     stoch = ta.momentum.StochasticOscillator(data["High"], data["Low"], data["Close"], window=params.get('stochastic_period', 14))
@@ -473,7 +484,6 @@ async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
     
     logger.info("Checking for potential signals on M5...")
     
-    # Respect Polygon's 5 requests/minute limit
     pairs_to_check = bot_state.get('selected_pairs', [])
     for i in range(0, len(pairs_to_check), 4):
         batch = pairs_to_check[i:i+4]
@@ -537,11 +547,10 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
             if time_since_signal < 60:
                 continue
 
-            # 1. M15 Trend Filter
-            m15_trend_ok = True # Default to True if filter is disabled
+            m15_trend_ok = True
             if bot_state.get('m15_filter_enabled', True):
                 data_m15 = await fetch_historical_data(pair, 15, "minute", 50)
-                await asyncio.sleep(1) # Small delay between API calls
+                await asyncio.sleep(1) 
                 
                 if data_m15.empty:
                     logger.warning(f"Could not fetch M15 data for {pair}, skipping trend filter.")
@@ -557,7 +566,6 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
                     elif signal_info['direction'] == 'هبوط' and last_close_m15 < last_ema_m15:
                         m15_trend_ok = True
 
-            # 2. Final M5 Confirmation
             data_m5 = await fetch_historical_data(pair, 5, "minute", 50)
             if data_m5.empty:
                 raise Exception("Failed to fetch M5 data for final confirmation.")
@@ -574,7 +582,6 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
                 elif signal_info['direction'] == 'هبوط' and sell_strength >= final_confidence and buy_strength == 0:
                     confirmed = True
             
-            # 3. Send Final Result
             await context.bot.delete_message(chat_id=CHAT_ID, message_id=signal_info['message_id'])
             
             if confirmed:
@@ -668,4 +675,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
+    
