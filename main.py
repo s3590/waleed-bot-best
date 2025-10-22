@@ -406,7 +406,7 @@ def get_candlestick_patterns(data: pd.DataFrame) -> dict:
     body_size = abs(last['Close'] - last['Open'])
     if body_size == 0: body_size = 0.00001
     lower_wick = (last['Open'] if last['Open'] > last['Close'] else last['Close']) - last['Low']
-    upper_wick = last['High'] - (last['Close'
+    upper_wick = last['High'] - (last['Close']
 if last['Open'] < last['Close'] else last['Open'])
     if lower_wick > body_size * 2 and upper_wick < body_size:
          patterns['buy'] += 1
@@ -668,3 +668,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
