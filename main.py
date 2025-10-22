@@ -432,8 +432,7 @@ async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     
     data["rsi"] = ta.momentum.RSIIndicator(data["Close"], window=params.get('rsi_period', 14)).rsi()
     macd = ta.trend.MACD(data["Close"], window_fast=params.get('macd_fast', 12), window_slow=params.get('macd_slow', 26), window_sign=params.get('macd_signal', 9))
-    data["macd"], data["macd_signal"] = macd.
-    macd(), macd.macd_signal()
+    data["macd"], data["macd_signal"] = macd.macd(), macd.macd_signal()
     bollinger = ta.volatility.BollingerBands(data["Close"], window=params.get('bollinger_period', 20))
     data["bb_h"], data["bb_l"] = bollinger.bollinger_hband(), bollinger.bollinger_lband()
     stoch = ta.momentum.StochasticOscillator(data["High"], data["Low"], data["Close"], window=params.get('stochastic_period', 14))
@@ -475,7 +474,7 @@ async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     sell_signals += candle_patterns['sell']
     
     return {'buy': buy_signals, 'sell': sell_signals}
-
+        
 async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get("running") or not bot_state.get('selected_pairs'): return
     
@@ -676,4 +675,5 @@ def main() -> None:
 if __name__ == '__main__':
     main()
     
+
 
