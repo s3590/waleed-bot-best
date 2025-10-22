@@ -339,7 +339,7 @@ async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -
         data = await fetch_historical_data(pair, 5, "minute", 100)
         params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
         
-        # --- الإصلاح هنا ---
+        # --- الإصلاح هنا: التحقق من طول البيانات قبل التحليل ---
         required_length = max(params.get('adx_period', 14), params.get('atr_period', 14))
         if data is None or data.empty or len(data) < required_length:
             logger.warning(f"Not enough data for {pair} to analyze activity. Got {len(data) if not data.empty else 0}, need {required_length}.")
@@ -351,7 +351,6 @@ async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -
         atr_percent = (atr_value / data['Close'].iloc[-1]) * 100
         return {'pair': pair, 'adx': adx_value, 'atr_percent': atr_percent}
     except Exception as e:
-        # إرسال الخطأ الحقيقي بدلاً من رسالة عامة
         await send_error_to_telegram(context, f"Error in analyze_pair_activity for {pair}: {e}")
         return None
 
@@ -675,5 +674,6 @@ def main() -> None:
 if __name__ == '__main__':
     main()
     
+
 
 
