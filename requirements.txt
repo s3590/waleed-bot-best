@@ -3,3 +3,6 @@ requests
 pandas
 ta
 flask
+TA-Lib
+Gunicorn
+
