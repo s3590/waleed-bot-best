@@ -13,6 +13,11 @@ from telegram.ext import (
 import pandas as pd
 import requests
 import ta
+# --- *** الإضافات الجديدة لـ Render *** ---
+from flask import Flask
+import threading
+# --- *** نهاية الإضافات *** ---
+
 
 # --- قراءة المتغيرات الحساسة ---
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -23,6 +28,19 @@ POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
 # --- إعدادات التسجيل ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# --- *** إعداد خادم الويب لـ Render *** ---
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "Bot is running!"
+
+def run_flask_app():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+# --- *** نهاية إعداد خادم الويب *** ---
+
 
 # --- قائمة الأزواج المعتمدة ---
 USER_DEFINED_PAIRS = [
@@ -306,7 +324,7 @@ async def fetch_historical_data(pair: str, interval: int, timeframe: str, limit:
 
     polygon_ticker = f"C:{pair.replace('/', '')}"
     end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=30) # زيادة النطاق الزمني لضمان وجود بيانات كافية
+    start_date = end_date - timedelta(days=30)
 
     url = (f"https://api.polygon.io/v2/aggs/ticker/{polygon_ticker}/range/{interval}/{timeframe}/"
            f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=desc&limit={limit}&apiKey={api_key}")
@@ -333,18 +351,15 @@ async def fetch_historical_data(pair: str, interval: int, timeframe: str, limit:
         logger.error(f"An unexpected error occurred in fetch_historical_data for {pair}: {e}")
         return pd.DataFrame()
 
-# --- *** الدالة المصححة مع فحص طول البيانات *** ---
 async def analyze_pair_activity(pair: str, context: ContextTypes.DEFAULT_TYPE) -> dict or None:
     try:
         data = await fetch_historical_data(pair, 5, "minute", 100)
         params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
         
-        # --- الإصلاح هنا: التحقق من طول البيانات قبل التحليل ---
         required_length = max(params.get('adx_period', 14), params.get('atr_period', 14))
         if data is None or data.empty or len(data) < required_length:
             logger.warning(f"Not enough data for {pair} to analyze activity. Got {len(data) if not data.empty else 0}, need {required_length}.")
             return None
-        # --- نهاية الإصلاح ---
 
         adx_value = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=params.get('adx_period', 14)).adx().iloc[-1]
         atr_value = ta.volatility.AverageTrueRange(data['High'], data['Low'], data['Close'], window=params.get('atr_period', 14)).average_true_range().iloc[-1]
@@ -443,13 +458,11 @@ async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     
     buy_signals, sell_signals = 0, 0
     
-    # RSI
     if last["rsi"] < 35: buy_signals += 1
     if last["rsi"] > 30 and prev["rsi"] <= 30: buy_signals += 1
     if last["rsi"] > 65: sell_signals += 1
     if last["rsi"] < 70 and prev["rsi"] >= 70: sell_signals += 1
     
-    # MACD
     is_cross_up = last["macd"] > last["macd_signal"] and prev["macd"] <= prev["macd_signal"]
     is_cross_down = last["macd"] < last["macd_signal"] and prev["macd"] >= prev["macd_signal"]
     if macd_strategy == 'dynamic':
@@ -473,7 +486,7 @@ async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     sell_signals += candle_patterns['sell']
     
     return {'buy': buy_signals, 'sell': sell_signals}
-        
+
 async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get("running") or not bot_state.get('selected_pairs'): return
     
@@ -608,7 +621,7 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"Could not delete message for canceled signal {pair}: {del_e}")
                 del pending_signals[pair]
 
-def main() -> None:
+def main_bot():
     if not all([TOKEN, CHAT_ID, POLYGON_API_KEY]):
         logger.critical("One or more environment variables are missing (TOKEN, CHAT_ID, or POLYGON_API_KEY).")
         return
@@ -672,8 +685,10 @@ def main() -> None:
     application.run_polling()
 
 if __name__ == '__main__':
-    main()
+    # تشغيل خادم الويب في خيط منفصل
+    flask_thread = threading.Thread(target=run_flask_app)
+    flask_thread.daemon = True
+    flask_thread.start()
     
-
-
-
+    # تشغيل البوت
+    main_bot()
