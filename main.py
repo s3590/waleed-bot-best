@@ -730,6 +730,17 @@ def main_bot():
         persistent=True, name="bot_conversation"
     )
     application.add_handler(conv_handler)
+# ... (الكود السابق)
+application.add_handler(conv_handler)
+
+# --- السطر الجديد للإضافة ---
+application.job_queue.run_once(lambda context: context.bot.send_message(chat_id=CHAT_ID, text="✅ اختبار بدء التشغيل: أنا حي وأعمل!"), 10)
+# --- نهاية السطر الجديد ---
+    
+# Start jobs if bot was running
+if bot_state.get('running'):
+# ... (الكود التالي)
+    
     
     # Start jobs if bot was running
     if bot_state.get('running'):
@@ -754,3 +765,4 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
                                             
+
