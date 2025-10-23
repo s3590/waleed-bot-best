@@ -1,4 +1,4 @@
-python-telegram-bot[job_queue]
+python-telegram-bot
 pandas
 requests
 ta
@@ -6,4 +6,5 @@ Flask
 gunicorn
 TA-Lib
 gevent
+
 
