@@ -32,4 +32,4 @@ COPY . .
 EXPOSE 10000
 
 # 7. Define the command to run the application
-CMD ["gunicorn", "--worker-class", "gevent", "--bind", "0.0.0.0:10000", "main:app"]
+CMD ["python", "main.py"]
