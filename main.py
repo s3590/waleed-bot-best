@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-# ALNUSIRY BOT { VIP } - Version 2.1 (Final Fix)
+# ALNUSIRY BOT { VIP } - Version 2.2 (Final Button Fix)
 # Changelog:
-# - Fixed the entire ConversationHandler logic to make all buttons responsive.
-# - Ensured all states and fallbacks are correctly registered.
+# - Correctly initializes essential keys (API key, Chat ID) into bot_state at startup.
+# - Ensures all button handlers have access to the necessary configuration.
 
 import logging
 import json
@@ -106,9 +106,14 @@ def load_bot_settings():
     except (FileNotFoundError, json.JSONDecodeError):
         logger.warning("Bot state file not found or invalid. Loading default profile.")
         if not load_strategy_profile('default.json'):
-            # If default also fails, start with hardcoded defaults
             bot_state = DEFAULT_SETTINGS.copy()
             save_bot_settings()
+    
+    # --- *** THE CRITICAL FIX IS HERE *** ---
+    # Always ensure essential keys are present after loading
+    bot_state['chat_id'] = CHAT_ID
+    bot_state['polygon_api_key'] = POLYGON_API_KEY
+    # --- *** END OF FIX *** ---
 
 
 def get_strategy_files():
@@ -124,7 +129,7 @@ def get_strategy_files():
 # --- UI Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_name = update.effective_user.first_name
-    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v2.1 👋\n\n"
+    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v2.2 👋\n\n"
                "مساعدك الذكي لإشارات التداول.\n\n"
                "استخدم الأزرار أدناه للتحكم.")
     await update.message.reply_text(message)
@@ -139,7 +144,6 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     
-    # Check if the update is a callback query or a message
     if update.callback_query:
         await update.callback_query.message.reply_text(message_text, reply_markup=reply_markup)
     else:
@@ -199,16 +203,11 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def trend_filter_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     current_mode = bot_state.get('trend_filter_mode', 'M15')
     modes = {
-        'NONE': '⚫️ إيقاف الفلترة (مغامر)',
-        'M15': '🟢 M15 فقط (متوازن)',
-        'H1': '🟡 H1 فقط (نظرة أوسع)',
-        'M15_H1': '🔴 M15 + H1 (متحفظ جدًا)'
+        'NONE': '⚫️ إيقاف الفلترة (مغامر)', 'M15': '🟢 M15 فقط (متوازن)',
+        'H1': '🟡 H1 فقط (نظرة أوسع)', 'M15_H1': '🔴 M15 + H1 (متحفظ جدًا)'
     }
-    keyboard = []
-    for mode, text in modes.items():
-        keyboard.append([KeyboardButton(f"{text} {'✅' if current_mode == mode else ''}")])
+    keyboard = [[KeyboardButton(f"{text} {'✅' if current_mode == mode else ''}")] for mode, text in modes.items()]
     keyboard.append([KeyboardButton("العودة إلى الإعدادات")])
-    
     await update.message.reply_text(
         f"اختر وضع فلتر الاتجاه (الحالي: {modes.get(current_mode, 'غير معروف')}):",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -221,7 +220,6 @@ async def set_trend_filter_mode(update: Update, context: ContextTypes.DEFAULT_TY
     if 'M15 فقط' in choice: new_mode = 'M15'
     elif 'H1 فقط' in choice: new_mode = 'H1'
     elif 'M15 + H1' in choice: new_mode = 'M15_H1'
-    
     bot_state['trend_filter_mode'] = new_mode
     save_bot_settings()
     await update.message.reply_text(f"تم تحديث وضع فلتر الاتجاه إلى: {new_mode}")
@@ -229,14 +227,9 @@ async def set_trend_filter_mode(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def strategy_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     profiles = get_strategy_files()
-    if not profiles:
-        await update.message.reply_text("لم يتم العثور على ملفات تعريف استراتيجية في مجلد `strategies`.")
-        return await settings_menu(update, context)
-
     keyboard = [[KeyboardButton(f"تحميل: {profile}")] for profile in profiles]
     keyboard.append([KeyboardButton("♻️ إعادة للوضع الافتراضي")])
     keyboard.append([KeyboardButton("العودة إلى الإعدادات")])
-    
     current_profile = bot_state.get('profile_name', 'غير معروف')
     await update.message.reply_text(
         f"اختر ملف تعريف لتحميله. (الحالي: {current_profile})",
@@ -287,7 +280,7 @@ async def set_confidence_value(update: Update, context: ContextTypes.DEFAULT_TYP
     return await set_confidence_menu(update, context)
 
 async def set_indicator_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
+    params = bot_state.get('indicator_params', {})
     keyboard = [[KeyboardButton(f"{key.replace('_', ' ').title()} ({value})")] for key, value in params.items()]
     keyboard.append([KeyboardButton("العودة إلى الإعدادات")])
     await update.message.reply_text("اختر المؤشر الذي تريد تعديل قيمته:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
@@ -320,20 +313,16 @@ async def receive_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def set_macd_strategy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     current_strategy = bot_state.get('macd_strategy', 'dynamic')
     message = "اختر استراتيجية الماكد التي تفضلها:"
-    keyboard = [
-        [KeyboardButton(f"🟢 ديناميكي (جودة عالية) {'✅' if current_strategy == 'dynamic' else ''}")],
-        [KeyboardButton(f"🟡 بسيط (كمية أكبر) {'✅' if current_strategy == 'simple' else ''}")],
-        [KeyboardButton("العودة إلى الإعدادات")]
-    ]
+    keyboard = [[KeyboardButton(f"🟢 ديناميكي (جودة عالية) {'✅' if current_strategy == 'dynamic' else ''}")],
+                [KeyboardButton(f"🟡 بسيط (كمية أكبر) {'✅' if current_strategy == 'simple' else ''}")],
+                [KeyboardButton("العودة إلى الإعدادات")]]
     await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return SETTING_MACD_STRATEGY
 
 async def set_macd_strategy_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     choice = update.message.text
-    if "ديناميكي" in choice:
-        bot_state['macd_strategy'] = 'dynamic'
-    elif "بسيط" in choice:
-        bot_state['macd_strategy'] = 'simple'
+    if "ديناميكي" in choice: bot_state['macd_strategy'] = 'dynamic'
+    elif "بسيط" in choice: bot_state['macd_strategy'] = 'simple'
     save_bot_settings()
     await update.message.reply_text(f"تم تحديث استراتيجية الماكد إلى: {bot_state['macd_strategy']}")
     return await settings_menu(update, context)
@@ -341,129 +330,77 @@ async def set_macd_strategy_value(update: Update, context: ContextTypes.DEFAULT_
 async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     api_key = bot_state.get('polygon_api_key')
     if not api_key:
-        await update.message.reply_text("❌ خطأ: مفتاح API الخاص بـ Polygon غير موجود.")
+        await update.message.reply_text("❌ خطأ: مفتاح API الخاص بـ Polygon غير موجود في `bot_state`.")
         return SETTINGS_MENU
-    
     url = f"https://api.polygon.io/v3/reference/tickers/AAPL?apiKey={api_key}"
     await update.message.reply_text("🔬 جاري فحص الاتصال مع Polygon.io...")
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
-            message = "✅ **الاتصال ناجح!**\n\nأنت متصل بخوادم Polygon.io."
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text("✅ **الاتصال ناجح!**", parse_mode='Markdown')
         else:
-            data = response.json()
-            message = f"❌ **فشل الاتصال!**\n\n**الرمز:** {response.status_code}\n**الرسالة:** {data.get('message', 'خطأ غير معروف')}"
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(f"❌ **فشل الاتصال!** الرمز: {response.status_code}", parse_mode='Markdown')
     except requests.RequestException as e:
-        await update.message.reply_text(f"❌ **خطأ في الشبكة!**\n\nلا يمكن الوصول إلى خوادم Polygon.io. التفاصيل: {e}")
+        await update.message.reply_text(f"❌ **خطأ في الشبكة!** التفاصيل: {e}", parse_mode='Markdown')
     return SETTINGS_MENU
 
 # --- Data Fetching & Analysis ---
 async def fetch_historical_data(pair: str, interval: int, timeframe: str, limit: int) -> pd.DataFrame:
     api_key = POLYGON_API_KEY
-    if not api_key:
-        logger.error("Polygon API key is missing.")
-        return pd.DataFrame()
-
+    if not api_key: logger.error("Polygon API key is missing."); return pd.DataFrame()
     polygon_ticker = f"C:{pair.replace('/', '')}"
     end_date = datetime.now(timezone.utc)
-    
-    if timeframe == 'minute':
-        delta_days = (limit * interval) / (24 * 60) + 5
-    else: # hour
-        delta_days = (limit * interval) / 24 + 10
-        
+    delta_days = ((limit * interval) / (24 * 60) + 5) if timeframe == 'minute' else ((limit * interval) / 24 + 10)
     start_date = end_date - timedelta(days=delta_days)
-
     url = (f"https://api.polygon.io/v2/aggs/ticker/{polygon_ticker}/range/{interval}/{timeframe}/"
            f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=desc&limit={limit}&apiKey={api_key}")
-
     try:
         response = requests.get(url, timeout=15)
         response.raise_for_status()
         data = response.json()
-
         if "results" in data and data['results']:
             df = pd.DataFrame(data["results"])
             df["datetime"] = pd.to_datetime(df["t"], unit='ms', utc=True)
             df = df.set_index("datetime").astype(float)
             df.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"}, inplace=True)
             return df.sort_index()
-        else:
-            logger.warning(f"No data returned from Polygon for {pair}. Response: {data}")
-            return pd.DataFrame()
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error fetching data for {pair} from Polygon: {e}")
-        return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in fetch_historical_data for {pair}: {e}")
-        return pd.DataFrame()
+        else: logger.warning(f"No data from Polygon for {pair}."); return pd.DataFrame()
+    except Exception as e: logger.error(f"Error fetching data for {pair}: {e}"); return pd.DataFrame()
 
 def analyze_candlestick_patterns(data: pd.DataFrame) -> dict:
-    buy_score = 0
-    sell_score = 0
-    
+    buy_score, sell_score = 0, 0
     strong_bullish = ['CDLMORNINGSTAR', 'CDL3WHITESOLDIERS']
     strong_bearish = ['CDLEVENINGSTAR', 'CDL3BLACKCROWS']
-    
     normal_bullish = ['CDLENGULFING', 'CDLHAMMER', 'CDLINVERTEDHAMMER', 'CDLPIERCING', 'CDL3INSIDE']
     normal_bearish = ['CDLENGULFING', 'CDLHANGINGMAN', 'CDLSHOOTINGSTAR', 'CDL3OUTSIDE', 'CDLHARAMI']
-
-    for pattern in strong_bullish:
-        result = getattr(talib, pattern)(data['Open'], data['High'], data['Low'], data['Close'])
-        if not result.empty and result.iloc[-1] > 0: buy_score += 2
-    for pattern in strong_bearish:
-        result = getattr(talib, pattern)(data['Open'], data['High'], data['Low'], data['Close'])
-        if not result.empty and result.iloc[-1] < 0: sell_score += 2
-            
-    for pattern in normal_bullish:
-        result = getattr(talib, pattern)(data['Open'], data['High'], data['Low'], data['Close'])
-        if not result.empty and result.iloc[-1] > 0: buy_score += 1
-    for pattern in normal_bearish:
-        result = getattr(talib, pattern)(data['Open'], data['High'], data['Low'], data['Close'])
-        if not result.empty:
-            if pattern == 'CDLENGULFING' and result.iloc[-1] < 0:
-                sell_score += 1
-            elif result.iloc[-1] < 0 and pattern != 'CDLENGULFING':
-                sell_score += 1
-                
+    for p in strong_bullish:
+        r = getattr(talib, p)(data['Open'], data['High'], data['Low'], data['Close'])
+        if not r.empty and r.iloc[-1] > 0: buy_score += 2
+    for p in strong_bearish:
+        r = getattr(talib, p)(data['Open'], data['High'], data['Low'], data['Close'])
+        if not r.empty and r.iloc[-1] < 0: sell_score += 2
+    for p in normal_bullish:
+        r = getattr(talib, p)(data['Open'], data['High'], data['Low'], data['Close'])
+        if not r.empty and r.iloc[-1] > 0: buy_score += 1
+    for p in normal_bearish:
+        r = getattr(talib, p)(data['Open'], data['High'], data['Low'], data['Close'])
+        if not r.empty and ((p == 'CDLENGULFING' and r.iloc[-1] < 0) or (r.iloc[-1] < 0 and p != 'CDLENGULFING')): sell_score += 1
     return {'buy': buy_score, 'sell': sell_score}
 
 def get_fibonacci_retracement(data: pd.DataFrame) -> dict:
     if len(data) < 20: return {'buy_proximity': 0, 'sell_proximity': 0}
-    
-    high_point = data['High'].rolling(window=20).max().iloc[-1]
-    low_point = data['Low'].rolling(window=20).min().iloc[-1]
-    current_price = data['Close'].iloc[-1]
+    high, low, current = data['High'].rolling(20).max().iloc[-1], data['Low'].rolling(20).min().iloc[-1], data['Close'].iloc[-1]
+    if high == low: return {'buy_proximity': 0, 'sell_proximity': 0}
+    buy_score, sell_score = 0, 0
+    for level in [0.382, 0.5, 0.618]:
+        if abs(current - (high - (high - low) * level)) / current < 0.0005: buy_score += 1
+        if abs(current - (low + (high - low) * level)) / current < 0.0005: sell_score += 1
+    return {'buy_proximity': buy_score, 'sell_proximity': sell_score}
 
-    if high_point == low_point: return {'buy_proximity': 0, 'sell_proximity': 0}
-
-    levels = [0.382, 0.5, 0.618]
-    buy_proximity_score = 0
-    sell_proximity_score = 0
-
-    for level in levels:
-        fib_level_up = high_point - (high_point - low_point) * level
-        fib_level_down = low_point + (high_point - low_point) * level
-        
-        if abs(current_price - fib_level_up) / current_price < 0.0005:
-            buy_proximity_score += 1
-        if abs(current_price - fib_level_down) / current_price < 0.0005:
-            sell_proximity_score += 1
-
-    return {'buy_proximity': buy_proximity_score, 'sell_proximity': sell_proximity_score}
-
-async def analyze_signal_strength(data: pd.DataFrame, context: ContextTypes.DEFAULT_TYPE) -> dict:
+async def analyze_signal_strength(data: pd.DataFrame) -> dict:
     params = bot_state.get('indicator_params', DEFAULT_SETTINGS['indicator_params'])
-    macd_strategy = bot_state.get('macd_strategy', 'dynamic')
-    
     required_length = max(params.values())
-    if data is None or data.empty or len(data) < required_length:
-        logger.warning(f"Not enough data for signal analysis. Got {len(data) if not data.empty else 0}, need {required_length}.")
-        return {}
-
+    if data is None or data.empty or len(data) < required_length: return {}
     data["rsi"] = ta.momentum.RSIIndicator(data["Close"], window=params.get('rsi_period', 14)).rsi()
     macd = ta.trend.MACD(data["Close"], window_fast=params.get('macd_fast', 12), window_slow=params.get('macd_slow', 26), window_sign=params.get('macd_signal', 9))
     data["macd"], data["macd_signal"] = macd.macd(), macd.macd_signal()
@@ -472,76 +409,52 @@ async def analyze_signal_strength(data: pd.DataFrame, context: ContextTypes.DEFA
     stoch = ta.momentum.StochasticOscillator(data["High"], data["Low"], data["Close"], window=params.get('stochastic_period', 14))
     data["stoch_k"], data["stoch_d"] = stoch.stoch(), stoch.stoch_signal()
     data.dropna(inplace=True)
-    
     if data.empty or len(data) < 2: return {}
     last, prev = data.iloc[-1], data.iloc[-2]
-    
-    buy_signals, sell_signals = 0, 0
-    
-    if last["rsi"] < 35: buy_signals += 1
-    if last["rsi"] > 30 and prev["rsi"] <= 30: buy_signals += 1
-    if last["rsi"] > 65: sell_signals += 1
-    if last["rsi"] < 70 and prev["rsi"] >= 70: sell_signals += 1
-    
-    is_cross_up = last["macd"] > last["macd_signal"] and prev["macd"] <= prev["macd_signal"]
-    is_cross_down = last["macd"] < last["macd_signal"] and prev["macd"] >= prev["macd_signal"]
-    if macd_strategy == 'dynamic':
-        if is_cross_up and last["macd"] < 0: buy_signals += 1
-        if is_cross_down and last["macd"] > 0: sell_signals += 1
+    buy, sell = 0, 0
+    if last["rsi"] < 35: buy += 1
+    if last["rsi"] > 30 and prev["rsi"] <= 30: buy += 1
+    if last["rsi"] > 65: sell += 1
+    if last["rsi"] < 70 and prev["rsi"] >= 70: sell += 1
+    is_cross_up, is_cross_down = last["macd"] > last["macd_signal"] and prev["macd"] <= prev["macd_signal"], last["macd"] < last["macd_signal"] and prev["macd"] >= prev["macd_signal"]
+    if bot_state.get('macd_strategy') == 'dynamic':
+        if is_cross_up and last["macd"] < 0: buy += 1
+        if is_cross_down and last["macd"] > 0: sell += 1
     else:
-        if is_cross_up: buy_signals += 1
-        if is_cross_down: sell_signals += 1
-        
-    if last["Close"] < last["bb_l"]: buy_signals += 1
-    if last["Close"] > last["bb_h"]: sell_signals += 1
-    
-    if last["stoch_k"] > last["stoch_d"] and last["stoch_k"] < 30: buy_signals += 1
-    if last["stoch_k"] < last["stoch_d"] and last["stoch_k"] > 70: sell_signals += 1
-    
-    candle_patterns = analyze_candlestick_patterns(data)
-    buy_signals += candle_patterns['buy']
-    sell_signals += candle_patterns['sell']
-    
-    fib_scores = get_fibonacci_retracement(data)
-    buy_signals += fib_scores['buy_proximity']
-    sell_signals += fib_scores['sell_proximity']
-
-    analysis_results = {
-        'buy': buy_signals, 'sell': sell_signals,
-        'rsi_value': last["rsi"], 'macd_value': last["macd"], 'stoch_k': last["stoch_k"],
-        'candle_buy_score': candle_patterns['buy'],
-        'candle_sell_score': candle_patterns['sell'],
-        'fib_buy_score': fib_scores['buy_proximity'],
-        'fib_sell_score': fib_scores['sell_proximity']
-    }
-    return analysis_results
+        if is_cross_up: buy += 1
+        if is_cross_down: sell += 1
+    if last["Close"] < last["bb_l"]: buy += 1
+    if last["Close"] > last["bb_h"]: sell += 1
+    if last["stoch_k"] > last["stoch_d"] and last["stoch_k"] < 30: buy += 1
+    if last["stoch_k"] < last["stoch_d"] and last["stoch_k"] > 70: sell += 1
+    candles = analyze_candlestick_patterns(data); buy += candles['buy']; sell += candles['sell']
+    fibs = get_fibonacci_retracement(data); buy += fibs['buy_proximity']; sell += fibs['sell_proximity']
+    return {'buy': buy, 'sell': sell, 'rsi_value': last["rsi"], 'macd_value': last["macd"], 'stoch_k': last["stoch_k"],
+            'candle_buy_score': candles['buy'], 'candle_sell_score': candles['sell'], 'fib_buy_score': fibs['buy_proximity'], 'fib_sell_score': fibs['sell_proximity']}
 
 # --- Core Bot Logic ---
 async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get("running") or not bot_state.get('selected_pairs'): return
-    
     now = datetime.now(timezone.utc)
     if now.minute % 5 != 0: return
-    
     logger.info("Checking for potential signals on M5...")
-    
     pairs_to_check = bot_state.get('selected_pairs', [])
     for i in range(0, len(pairs_to_check), 4):
         batch = pairs_to_check[i:i+4]
         tasks = [process_single_pair_signal(pair, context, now) for pair in batch if pair not in pending_signals]
         await asyncio.gather(*tasks)
-        
         if i + 4 < len(pairs_to_check):
-            logger.info("Waiting for 60 seconds before next batch of signal checks...")
-            await asyncio.sleep(60)
+            logger.info("Waiting 60s for API rate limit..."); await asyncio.sleep(60)
 
 async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TYPE, now: datetime):
     try:
         data = await fetch_historical_data(pair, 5, "minute", 150)
-        if data.empty: return
+        if data.empty:
+            return
 
-        analysis = await analyze_signal_strength(data, context)
-        if not analysis: return
+        analysis = await analyze_signal_strength(data)
+        if not analysis:
+            return
 
         buy_strength, sell_strength = analysis.get('buy', 0), analysis.get('sell', 0)
         
@@ -553,15 +466,17 @@ async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TY
             
         if direction:
             entry_time = (now + timedelta(minutes=5)).strftime("%H:%M:%S")
-            direction_emoji = "🟢" if direction == "صعود" else "🔴"
-            direction_arrow = "⬆️" if direction == "صعود" else "⬇️"
-            signal_text = (f"   🔔   {direction_emoji} {{  اشارة   {direction}  }} {direction_emoji}   🔔       \n"
-                           f"           📊 الزوج :  {pair} \n"
-                           f"           🕛  الفريم :  M5\n"
-                           f"           📉  الاتجاه:  {direction} {direction_arrow}\n"
-                           f"           ⏳ وقت الدخول : {entry_time}\n\n"
-                           f"               🔍 {{  انتظر   التاكيد   }}")
-            sent_message = await context.bot.send_message(chat_id=CHAT_ID, text=signal_text)
+            emoji = "🟢" if direction == "صعود" else "🔴"
+            arrow = "⬆️" if direction == "صعود" else "⬇️"
+            
+            text = (f"   🔔   {emoji} {{  اشارة   {direction}  }} {emoji}   🔔       \n"
+                    f"           📊 الزوج :  {pair} \n"
+                    f"           🕛  الفريم :  M5\n"
+                    f"           📉  الاتجاه:  {direction} {arrow}\n"
+                    f"           ⏳ وقت الدخول : {entry_time}\n\n"
+                    f"               🔍 {{  انتظر   التاكيد   }}")
+            
+            sent_message = await context.bot.send_message(chat_id=CHAT_ID, text=text)
             
             pending_signals[pair] = {
                 'direction': direction, 
@@ -573,7 +488,6 @@ async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TY
             
     except Exception as e:
         await send_error_to_telegram(context, f"Error in process_single_pair_signal for {pair}: {e}")
-
 
 async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get("running") or not pending_signals:
@@ -625,7 +539,7 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
                 if data_m5.empty:
                     raise Exception("Failed to fetch M5 data for final confirmation.")
 
-                final_analysis = await analyze_signal_strength(data_m5, context)
+                final_analysis = await analyze_signal_strength(data_m5)
                 if not final_analysis:
                     raise Exception("Final M5 analysis returned empty.")
 
@@ -876,7 +790,7 @@ def main_bot():
         application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check', chat_id=CHAT_ID)
         application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check', chat_id=CHAT_ID)
         
-    logger.info("Bot v2.1 is starting with Polygon.io data provider...")
+    logger.info("Bot v2.2 is starting with Polygon.io data provider...")
     application.run_polling()
 
 if __name__ == '__main__':
