@@ -681,16 +681,32 @@ async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return SELECTING_ACTION
 
 # --- Main Application Setup ---
+# --- Main Application Setup ---
+async def post_init(application: Application):
+    """
+    Function to run once after the application is initialized.
+    Sends a startup message.
+    """
+    await application.bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"✅ **البوت متصل وجاهز!** (v2.0)\n\nتم بدء التشغيل بنجاح في {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+
 def main_bot():
+    """
+    Initializes and runs the Telegram bot application.
+    """
     if not all([TOKEN, CHAT_ID, POLYGON_API_KEY]):
         logger.critical("One or more environment variables are missing.")
         return
-        
+            
     load_bot_settings()
-    
+        
     persistence = PicklePersistence(filepath="bot_persistence")
-    application = Application.builder().token(TOKEN).persistence(persistence).build()
-    
+        
+    # Use post_init to run a function after initialization
+    application = Application.builder().token(TOKEN).persistence(persistence).post_init(post_init).build()
+        
     # Add handlers
     application.add_handler(CallbackQueryHandler(add_pair_callback, pattern=r'^addpair'))
     application.add_handler(CallbackQueryHandler(trade_result_callback, pattern=r'^result_'))
@@ -713,7 +729,11 @@ def main_bot():
                 MessageHandler(filters.Regex(r'^📁 ملفات تعريف الاستراتيجية$'), strategy_profile_menu),
                 MessageHandler(filters.Regex(r'^🚦 فلاتر الاتجاه$'), trend_filter_menu),
                 MessageHandler(filters.Regex(r'العودة إلى القائمة الرئيسية'), start),
-                # Add other settings handlers here...
+                # You might need to add the other settings handlers here if they were removed
+                MessageHandler(filters.Regex(r'^تحديد عتبة'), set_confidence_menu),
+                MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
+                MessageHandler(filters.Regex(r'^📊 استراتيجية الماكد$'), set_macd_strategy_menu),
+                MessageHandler(filters.Regex(r'^🔬 فحص اتصال API$'), check_api_connection),
             ],
             SELECTING_STRATEGY: [
                 MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
@@ -724,45 +744,46 @@ def main_bot():
                 MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, set_trend_filter_mode),
             ],
-            # ... other states ...
+            SETTING_CONFIDENCE: [
+                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), 
+                MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)
+            ],
+            SETTING_INDICATOR: [
+                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, select_indicator_to_set)
+            ],
+            AWAITING_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_value)
+            ],
+            SETTING_MACD_STRATEGY: [
+                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, set_macd_strategy_value)
+            ],
         },
         fallbacks=[CommandHandler('start', start)],
         persistent=True, name="bot_conversation"
     )
     application.add_handler(conv_handler)
-# ... (الكود السابق)
-application.add_handler(conv_handler)
-
-# --- السطر الجديد للإضافة ---
-application.job_queue.run_once(lambda context: context.bot.send_message(chat_id=CHAT_ID, text="✅ اختبار بدء التشغيل: أنا حي وأعمل!"), 10)
-# --- نهاية السطر الجديد ---
-    
-# Start jobs if bot was running
-if bot_state.get('running'):
-# ... (الكود التالي)
-    
-    
+        
     # Start jobs if bot was running
     if bot_state.get('running'):
         application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
         application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check')
-        
+            
     logger.info("Bot v2.0 is starting with Polygon.io data provider...")
     application.run_polling()
 
-def run_bot():
-    """This function starts the bot polling."""
-    main_bot()
-
-if __name__ == '__main__':
-    # Start the bot in a separate thread
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-
-    # Run the Flask app in the main thread
-    # This is often more stable on hosting platforms
+def run_flask():
+    """This function starts the Flask web server."""
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
-                                            
 
+if __name__ == '__main__':
+    # Run Flask app in a separate thread
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+        
+    # Run the bot in the main thread
+    main_bot()
+    
