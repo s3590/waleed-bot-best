@@ -1,13 +1,9 @@
 # -*- coding: utf-8 -*-
-# ALNUSIRY BOT { VIP } - Version 4.0 (All Features Restored & Fully Stable)
+# ALNUSIRY BOT { VIP } - Version 4.1 (Error Reporting Feature)
 # Changelog:
-# - The TRUE final version, combining all advanced features and stability fixes.
-# - Restored "Trend Filters" feature and its corresponding menu button.
-# - Re-integrated Candlestick Pattern analysis into the signal strength calculation.
-# - Re-integrated Higher Timeframe (M15, H1) trend analysis.
-# - Fixed the JobQueue AttributeError for modern python-telegram-bot versions.
-# - All NameError, IndentationError, and logical errors have been resolved.
-# - Structured to work correctly with Render deployment and Dockerfile COPY order.
+# - Added `send_error_to_telegram` function to report critical errors directly to the user.
+# - Integrated error reporting into data fetching and signal processing functions.
+# - This version includes all features from v4.0 (Trend Filters, Candlesticks) plus stability improvements.
 
 import logging
 import json
@@ -19,12 +15,12 @@ from threading import Thread
 import pandas as pd
 import requests
 import ta
-import talib # This library is now used for candlestick patterns
+import talib
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler, JobQueue
+    ContextTypes, ConversationHandler, JobQueue
 )
 
 from flask import Flask
@@ -37,13 +33,6 @@ POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
 STATE_FILE = 'bot_state.json'
 STRATEGIES_DIR = 'strategies'
 
-# --- قائمة الأزواج المعتمدة ---
-USER_DEFINED_PAIRS = [
-    "EUR/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
-    "EUR/JPY", "AUD/JPY", "CHF/JPY", "EUR/CHF", "AUD/CHF", "CAD/CHF",
-    "EUR/AUD", "EUR/CAD", "AUD/CAD", "CAD/JPY"
-]
-
 # --- إعداد تسجيل الأنشطة (Logging) ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -51,21 +40,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- دالة إرسال الأخطاء إلى تليجرام ---
+async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_message: str):
+    """تقوم بتسجيل الخطأ وإرسال إشعار به إلى المستخدم عبر تليجرام."""
+    logger.error(error_message) # تسجيل الخطأ في سجلات Render كالمعتاد
+    try:
+        await context.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=f"🤖⚠️ **حدث خطأ فادح في البوت** ⚠️🤖\n\n**التفاصيل:**\n`{error_message}`\n\nيرجى مراجعة سجلات النشر (Logs) لمزيد من المعلومات.",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"فشل حاد: لم يتمكن البوت من إرسال رسالة الخطأ إلى تليجرام. الخطأ: {e}")
+
 # --- خادم ويب Flask (للتوافق مع Render) ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
-    return "ALNUSIRY BOT (v4.0 Full Feature) is alive!", 200
+    return "ALNUSIRY BOT (v4.1 Full Feature) is alive!", 200
 
 def run_flask_app():
     port = int(os.environ.get("PORT", 10000))
-    # For production, it's better to use a WSGI server like gunicorn
     flask_app.run(host='0.0.0.0', port=port)
 
 # --- حالة البوت والبيانات ---
 bot_state = {}
 signals_statistics = {}
 pending_signals = []
+USER_DEFINED_PAIRS = [
+    "EUR/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
+    "EUR/JPY", "AUD/JPY", "CHF/JPY", "EUR/CHF", "AUD/CHF", "CAD/CHF",
+    "EUR/AUD", "EUR/CAD", "AUD/CAD", "CAD/JPY"
+]
 
 # --- دوال إدارة الحالة والاستراتيجيات ---
 def save_bot_state():
@@ -125,79 +131,74 @@ def get_strategy_files():
     return [f for f in os.listdir(STRATEGIES_DIR) if f.endswith('.json')]
 
 # --- دوال التحليل الفني المتقدمة ---
-async def get_forex_data(pair: str, timeframe: str, limit: int) -> pd.DataFrame:
+async def get_forex_data(pair: str, timeframe: str, limit: int, context: ContextTypes.DEFAULT_TYPE) -> pd.DataFrame:
     if not POLYGON_API_KEY:
-        logger.error("مفتاح Polygon API غير موجود!")
+        error_msg = "متغير البيئة POLYGON_API_KEY غير موجود!"
+        await send_error_to_telegram(context, error_msg)
         return pd.DataFrame()
+    
     polygon_ticker = f"C:{pair.replace('/', '')}"
     interval_map = {"M5": "5", "M15": "15", "H1": "1", "H4": "4"}
     timespan_map = {"M5": "minute", "M15": "minute", "H1": "hour", "H4": "hour"}
     if timeframe not in interval_map: return pd.DataFrame()
+    
     interval, timespan = interval_map[timeframe], timespan_map[timeframe]
     end_date = datetime.now(timezone.utc)
     if timespan == 'minute': start_date = end_date - timedelta(days=(int(interval) * limit) / (24 * 60) + 5)
     else: start_date = end_date - timedelta(days=(int(interval) * limit) / 24 + 10)
+    
     url = (f"https://api.polygon.io/v2/aggs/ticker/{polygon_ticker}/range/{interval}/{timespan}/"
-           f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=asc&limit={limit}")
+           f"{start_date.strftime('%Y-%m-%d' )}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=asc&limit={limit}")
     headers = {"Authorization": f"Bearer {POLYGON_API_KEY}"}
+    
     try:
-        async with asyncio.get_event_loop().run_in_executor(None, lambda: requests.get(url, headers=headers, timeout=20)) as response:
-            response.raise_for_status()
-            data = response.json()
-            if "results" in data and data['results']:
-                df = pd.DataFrame(data['results'])
-                df['datetime'] = pd.to_datetime(df['t'], unit='ms', utc=True)
-                df = df.set_index('datetime')[['o', 'h', 'l', 'c', 'v']].astype(float)
-                df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-                return df
-            return pd.DataFrame()
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: requests.get(url, headers=headers, timeout=20))
+        response.raise_for_status()
+        data = response.json()
+        
+        if "results" in data and data['results']:
+            df = pd.DataFrame(data['results'])
+            df['datetime'] = pd.to_datetime(df['t'], unit='ms', utc=True)
+            df = df.set_index('datetime')[['o', 'h', 'l', 'c', 'v']].astype(float)
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            return df
+        return pd.DataFrame()
+        
     except Exception as e:
-        logger.error(f"خطأ أثناء جلب بيانات {pair} للإطار الزمني {timeframe}: {e}")
+        error_msg = f"فشل الاتصال بـ Polygon API لجلب بيانات {pair} ({timeframe}): {e}"
+        await send_error_to_telegram(context, error_msg)
         return pd.DataFrame()
 
 def analyze_candlestick_patterns(data: pd.DataFrame) -> (int, int):
-    """تحليل نماذج الشموع اليابانية باستخدام Talib."""
     buy_score, sell_score = 0, 0
-    # يمكنك إضافة المزيد من النماذج هنا
     bullish_patterns = ['CDLHAMMER', 'CDLMORNINGSTAR', 'CDL3WHITESOLDIERS']
     bearish_patterns = ['CDLHANGINGMAN', 'CDLEVENINGSTAR', 'CDL3BLACKCROWS']
-
     for pattern in bullish_patterns:
         result = getattr(talib, pattern)(data['Open'], data['High'], data['Low'], data['Close'])
-        if result.iloc[-1] > 0:
-            buy_score += 1
+        if not result.empty and result.iloc[-1] > 0: buy_score += 1
     for pattern in bearish_patterns:
         result = getattr(talib, pattern)(data['Open'], data['High'], data['Low'], data['Close'])
-        if result.iloc[-1] < 0:
-            sell_score += 1
+        if not result.empty and result.iloc[-1] < 0: sell_score += 1
     return buy_score, sell_score
 
-async def get_trend(pair: str, timeframe: str, period: int) -> str:
-    """تحديد الاتجاه العام على إطار زمني أعلى."""
-    df = await get_forex_data(pair, timeframe, period + 50) # جلب بيانات كافية
-    if df is None or df.empty or len(df) < period:
-        return 'NEUTRAL'
-    
+async def get_trend(pair: str, timeframe: str, period: int, context: ContextTypes.DEFAULT_TYPE) -> str:
+    df = await get_forex_data(pair, timeframe, period + 50, context)
+    if df is None or df.empty or len(df) < period: return 'NEUTRAL'
     df[f'ema_{period}'] = ta.trend.EMAIndicator(df['Close'], window=period).ema_indicator()
     last_close = df['Close'].iloc[-1]
     last_ema = df[f'ema_{period}'].iloc[-1]
-    
-    if last_close > last_ema:
-        return 'UP'
-    elif last_close < last_ema:
-        return 'DOWN'
-    else:
-        return 'NEUTRAL'
+    if last_close > last_ema: return 'UP'
+    elif last_close < last_ema: return 'DOWN'
+    else: return 'NEUTRAL'
 
 def analyze_signal_strength(df: pd.DataFrame, trend_m15: str, trend_h1: str) -> (int, int):
-    """التحليل الشامل لقوة الإشارة مع دمج فلاتر الاتجاه والشموع."""
     buy, sell = 0, 0
     params = bot_state.get('indicator_params', {})
     trend_mode = bot_state.get('trend_filter_mode', 'M15')
     
-    # فلترة أساسية بناءً على الاتجاه العام
-    if trend_mode == 'M15' and trend_m15 == 'DOWN': buy = -99 # منع الشراء في اتجاه هابط
-    if trend_mode == 'M15' and trend_m15 == 'UP': sell = -99 # منع البيع في اتجاه صاعد
+    if trend_mode == 'M15' and trend_m15 == 'DOWN': buy = -99
+    if trend_mode == 'M15' and trend_m15 == 'UP': sell = -99
     if trend_mode == 'H1' and trend_h1 == 'DOWN': buy = -99
     if trend_mode == 'H1' and trend_h1 == 'UP': sell = -99
     if trend_mode == 'M15_H1' and (trend_m15 == 'DOWN' or trend_h1 == 'DOWN'): buy = -99
@@ -206,7 +207,6 @@ def analyze_signal_strength(df: pd.DataFrame, trend_m15: str, trend_h1: str) -> 
     required_len = max(params.values()) if params else 26
     if df is None or df.empty or len(df) < required_len: return 0, 0
     
-    # حساب المؤشرات
     df['rsi'] = ta.momentum.RSIIndicator(df['Close'], window=params.get('rsi_period', 14)).rsi()
     macd = ta.trend.MACD(df['Close'], window_fast=params.get('macd_fast', 12), window_slow=params.get('macd_slow', 26), window_sign=params.get('macd_signal', 9))
     df['macd'], df['macd_signal'] = macd.macd(), macd.macd_signal()
@@ -221,7 +221,6 @@ def analyze_signal_strength(df: pd.DataFrame, trend_m15: str, trend_h1: str) -> 
     if df.empty: return 0, 0
     last, prev = df.iloc[-1], df.iloc[-2] if len(df) > 1 else df.iloc[-1]
 
-    # تحليل المؤشرات
     if last['rsi'] < 30: buy += 1
     if last['rsi'] > 70: sell += 1
     
@@ -240,55 +239,47 @@ def analyze_signal_strength(df: pd.DataFrame, trend_m15: str, trend_h1: str) -> 
     if last['adx'] > 25 and last['dmp'] > last['dmn']: buy += 1
     if last['adx'] > 25 and last['dmn'] > last['dmp']: sell += 1
 
-    # دمج تحليل الشموع
     candle_buy, candle_sell = analyze_candlestick_patterns(df)
     buy += candle_buy
     sell += candle_sell
 
-    return max(0, buy), max(0, sell) # التأكد من عدم إرجاع قيم سالبة
+    return max(0, buy), max(0, sell)
 
 # --- دوال البوت الأساسية والمهام المجدولة ---
 async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TYPE):
-    global pending_signals, signals_statistics
-    if any(s['pair'] == pair for s in pending_signals): return False
+    try:
+        if any(s['pair'] == pair for s in pending_signals): return False
 
-    # جلب الاتجاه العام أولاً
-    params = bot_state.get('indicator_params', {})
-    trend_m15 = await get_trend(pair, 'M15', params.get('m15_ema_period', 50))
-    trend_h1 = await get_trend(pair, 'H1', params.get('h1_ema_period', 50))
-    
-    # جلب بيانات الإشارة
-    df = await get_forex_data(pair, "M5", 200)
-    if df is None or df.empty: return False
+        params = bot_state.get('indicator_params', {})
+        trend_m15 = await get_trend(pair, 'M15', params.get('m15_ema_period', 50), context)
+        trend_h1 = await get_trend(pair, 'H1', params.get('h1_ema_period', 50), context)
+        
+        df = await get_forex_data(pair, "M5", 200, context)
+        if df is None or df.empty: return False
 
-    buy_strength, sell_strength = analyze_signal_strength(df, trend_m15, trend_h1)
-    
-    signal_type, confidence = (None, 0)
-    if buy_strength > sell_strength and buy_strength >= bot_state.get('initial_confidence', 3):
-        signal_type, confidence = 'BUY', buy_strength
-    elif sell_strength > buy_strength and sell_strength >= bot_state.get('initial_confidence', 3):
-        signal_type, confidence = 'SELL', sell_strength
+        buy_strength, sell_strength = analyze_signal_strength(df, trend_m15, trend_h1)
+        
+        signal_type, confidence = (None, 0)
+        if buy_strength > sell_strength and buy_strength >= bot_state.get('initial_confidence', 3):
+            signal_type, confidence = 'BUY', buy_strength
+        elif sell_strength > buy_strength and sell_strength >= bot_state.get('initial_confidence', 3):
+            signal_type, confidence = 'SELL', sell_strength
 
-    if signal_type:
-        new_signal = {'pair': pair, 'type': signal_type, 'confidence': confidence, 'timestamp': datetime.now(timezone.utc)}
-        pending_signals.append(new_signal)
-        if pair not in signals_statistics: signals_statistics[pair] = {'initial': 0, 'confirmed': 0, 'failed_confirmation': 0}
-        signals_statistics[pair]['initial'] += 1
-        save_bot_state()
+        if signal_type:
+            new_signal = {'pair': pair, 'type': signal_type, 'confidence': confidence, 'timestamp': datetime.now(timezone.utc)}
+            pending_signals.append(new_signal)
+            if pair not in signals_statistics: signals_statistics[pair] = {'initial': 0, 'confirmed': 0, 'failed_confirmation': 0}
+            signals_statistics[pair]['initial'] += 1
+            save_bot_state()
 
-        strength_meter = '⬆️' * buy_strength if signal_type == 'BUY' else '⬇️' * sell_strength
-        trend_text = f" (M15: {trend_m15}, H1: {trend_h1})"
-        message = (f"🔔 إشارة أولية محتملة 🔔\n\nالزوج: {pair}\nالنوع: {signal_type}\nالقوة: {strength_meter} ({confidence})\nالاتجاه العام: {trend_text}\n"
-                   f"سيتم التأكيد بعد {bot_state.get('confirmation_minutes', 5)} دقيقة.")
-        try:
+            strength_meter = '⬆️' * buy_strength if signal_type == 'BUY' else '⬇️' * sell_strength
+            trend_text = f" (M15: {trend_m15}, H1: {trend_h1})"
+            message = (f"🔔 إشارة أولية محتملة 🔔\n\nالزوج: {pair}\nالنوع: {signal_type}\nالقوة: {strength_meter} ({confidence})\nالاتجاه العام: {trend_text}\n"
+                       f"سيتم التأكيد بعد {bot_state.get('confirmation_minutes', 5)} دقيقة.")
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-            return True
-        except Exception as e:
-            logger.error(f"فشل إرسال رسالة الإشارة الأولية: {e}")
-            pending_signals.remove(new_signal)
-            signals_statistics[pair]['initial'] -= 1
-            return False
-    return False
+    except Exception as e:
+        error_msg = f"حدث خطأ غير متوقع في `process_single_pair_signal` للزوج {pair}: {e}"
+        await send_error_to_telegram(context, error_msg)
 
 async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get('is_running', False): return
@@ -299,7 +290,6 @@ async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
     await asyncio.gather(*tasks)
 
 async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
-    global pending_signals, signals_statistics
     if not bot_state.get('is_running', False): return
     current_time = datetime.now(timezone.utc)
     confirmation_minutes = bot_state.get('confirmation_minutes', 5)
@@ -309,14 +299,12 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
         pending_signals.remove(signal)
         pair, initial_type = signal['pair'], signal['type']
         
-        # لا نحتاج لجلب الاتجاه مرة أخرى للتأكيد، نركز على قوة الإشارة الحالية فقط
-        df_confirm = await get_forex_data(pair, "M5", 200)
+        df_confirm = await get_forex_data(pair, "M5", 200, context)
         if df_confirm is None or df_confirm.empty:
-            signals_statistics[pair]['failed_confirmation'] += 1
+            if pair in signals_statistics: signals_statistics[pair]['failed_confirmation'] += 1
             continue
 
-        # استدعاء دالة التحليل بدون فلاتر اتجاه للتأكيد
-        buy_strength, sell_strength = analyze_signal_strength(df_confirm, 'NEUTRAL', 'NEUTRAL') # تجاهل الفلتر في التأكيد
+        buy_strength, sell_strength = analyze_signal_strength(df_confirm, 'NEUTRAL', 'NEUTRAL')
         
         confirmed = False
         if initial_type == 'BUY' and buy_strength > sell_strength and buy_strength >= bot_state.get('confirmation_confidence', 4): confirmed = True
@@ -327,10 +315,12 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
             message = (f"✅ إشارة مؤكدة ✅\n\nالزوج: {pair}\nالنوع: {initial_type}\nقوة التأكيد: {strength_meter}")
             try:
                 await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-                signals_statistics[pair]['confirmed'] += 1
-            except Exception as e: logger.error(f"فشل إرسال رسالة التأكيد: {e}")
+                if pair in signals_statistics: signals_statistics[pair]['confirmed'] += 1
+            except Exception as e:
+                error_msg = f"فشل إرسال رسالة التأكيد للزوج {pair}: {e}"
+                await send_error_to_telegram(context, error_msg)
         else:
-            signals_statistics[pair]['failed_confirmation'] += 1
+            if pair in signals_statistics: signals_statistics[pair]['failed_confirmation'] += 1
         save_bot_state()
 
 # --- تعريف حالات المحادثة ---
@@ -341,8 +331,8 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
 # --- دوال واجهة المستخدم والقوائم (ConversationHandler) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_name = update.effective_user.first_name
-    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.0 👋\n\n"
-               "مساعدك الذكي لإشارات التداول. (إصدار الميزات الكاملة المستقر)")
+    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.1 👋\n\n"
+               "مساعدك الذكي لإشارات التداول. (إصدار التقارير والأخطاء)")
     await update.message.reply_text(message)
     return await send_main_menu(update, context)
 
@@ -461,31 +451,18 @@ async def set_indicator_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return SETTING_INDICATOR
 
 async def select_indicator_to_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    يتم استدعاؤها عند اختيار المستخدم لمؤشر معين من قائمة تعديل المؤشرات.
-    تقوم بتخزين المؤشر المختار وتطلب من المستخدم إدخال القيمة الجديدة.
-    """
     param_key_str = update.message.text.split(" (")[0].lower().replace(' ', '_')
-    
-    # التحقق من أن الخيار موجود ضمن قائمة المؤشرات في الإعدادات
     if param_key_str in bot_state.get('indicator_params', {}):
-        # تخزين اسم المؤشر في user_data للانتقال إلى الخطوة التالية
         context.user_data['param_to_set'] = param_key_str
-        
-        # إرسال رسالة تطلب من المستخدم إدخال القيمة الجديدة
         await update.message.reply_text(
             f"أرسل القيمة الرقمية الجديدة لـ **{param_key_str}**:",
             reply_markup=ReplyKeyboardMarkup([["إلغاء"]], resize_keyboard=True, one_time_keyboard=True),
             parse_mode='Markdown'
         )
-        
-        # الانتقال إلى حالة انتظار القيمة
         return AWAITING_VALUE
-        
-    # إذا كان الخيار غير صالح، يتم إعلام المستخدم والعودة لقائمة الإعدادات
     await update.message.reply_text("خيار غير صالح. الرجاء الاختيار من القائمة.")
     return await settings_menu(update, context)
-    
+
 async def receive_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         new_value = int(update.message.text)
@@ -545,18 +522,21 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # --- نقطة انطلاق البوت ---
 def main() -> None:
     if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, POLYGON_API_KEY]):
-        logger.critical("خطأ فادح: أحد متغيرات البيئة غير موجود.")
+        logger.critical("خطأ فادح: أحد متغيرات البيئة (TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, POLYGON_API_KEY) غير موجود.")
         return
 
     load_bot_state()
     
+    # إنشاء JobQueue وتمريرها إلى التطبيق
     job_queue = JobQueue()
     application = Application.builder().token(TELEGRAM_TOKEN).job_queue(job_queue).build()
     
+    # جدولة المهام باستخدام job_queue
     scan_interval = bot_state.get('scan_interval_seconds', 300)
     job_queue.run_repeating(check_for_signals, interval=scan_interval, first=10)
     job_queue.run_repeating(confirm_pending_signals, interval=60, first=15)
 
+    # إعداد ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
@@ -572,7 +552,7 @@ def main() -> None:
             ],
             SETTINGS_MENU: [
                 MessageHandler(filters.Regex(r'^📁 ملفات تعريف الاستراتيجية$'), strategy_profile_menu),
-                MessageHandler(filters.Regex(r'^🚦 فلاتر الاتجاه$'), trend_filter_menu), # الزر المفقود
+                MessageHandler(filters.Regex(r'^🚦 فلاتر الاتجاه$'), trend_filter_menu),
                 MessageHandler(filters.Regex(r'^تحديد عتبة'), set_confidence_menu),
                 MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
                 MessageHandler(filters.Regex(r'^📊 استراتيجية الماكد$'), set_macd_strategy_menu),
@@ -582,7 +562,7 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^تحميل:'), set_strategy_profile),
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
-            SELECTING_TREND_FILTER: [ # الحالة المفقودة
+            SELECTING_TREND_FILTER: [
                 MessageHandler(filters.Regex(r'^(⚫️|🟢|🟡|🔴)'), set_trend_filter_mode),
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
@@ -605,7 +585,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(r'^العودة'), start), # معالج عام للعودة
+            MessageHandler(filters.Regex(r'^العودة'), start),
             MessageHandler(filters.TEXT, start) 
         ],
         allow_reentry=True
@@ -613,11 +593,13 @@ def main() -> None:
 
     application.add_handler(conv_handler)
 
+    # بدء خادم Flask في خيط منفصل
     flask_thread = Thread(target=run_flask_app)
     flask_thread.daemon = True
     flask_thread.start()
 
-    logger.info("البوت (إصدار v4.0 الكامل) جاهز للعمل...")
+    # بدء تشغيل البوت
+    logger.info("البوت (إصدار v4.1 الكامل) جاهز للعمل...")
     application.run_polling()
 
 if __name__ == '__main__':
