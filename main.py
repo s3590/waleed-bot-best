@@ -1,17 +1,8 @@
 # -*- coding: utf-8 -*-
-# ALNUSIRY BOT { VIP } - Version 2.0
-#
+# ALNUSIRY BOT { VIP } - Version 2.1 (Final Fix)
 # Changelog:
-# - Switched to Polygon.io for reliable market data.
-# - Integrated TA-Lib for advanced candlestick pattern recognition (15 patterns).
-# - Added a weighted scoring system for candlestick patterns.
-# - Implemented a configurable multi-timeframe trend filter (None, M15, H1, M15+H1).
-# - Added Fibonacci retracement levels as a signal strength factor.
-# - Implemented a data collection system for future machine learning (trades_data.csv).
-# - Added a /stats command to display performance metrics.
-# - Implemented strategy profiles management (load settings from .json files).
-# - Enhanced cancellation messages with precise reasons.
-# - Added a Flask web server to comply with Render's "Web Service" requirements.
+# - Fixed the entire ConversationHandler logic to make all buttons responsive.
+# - Ensured all states and fallbacks are correctly registered.
 
 import logging
 import json
@@ -85,16 +76,6 @@ def save_bot_settings():
         json.dump(bot_state, f, indent=4)
     logger.info("Bot state saved.")
 
-def load_bot_settings():
-    global bot_state
-    try:
-        with open('bot_state.json', 'r') as f:
-            bot_state = json.load(f)
-        logger.info("Bot state loaded from file.")
-    except (FileNotFoundError, json.JSONDecodeError):
-        logger.warning("Bot state file not found or invalid. Loading default profile.")
-        load_strategy_profile('default.json')
-
 def load_strategy_profile(profile_filename: str) -> bool:
     global bot_state
     filepath = os.path.join(STRATEGIES_DIR, profile_filename)
@@ -116,6 +97,20 @@ def load_strategy_profile(profile_filename: str) -> bool:
         logger.error(f"Failed to load strategy profile {profile_filename}: {e}")
         return False
 
+def load_bot_settings():
+    global bot_state
+    try:
+        with open('bot_state.json', 'r') as f:
+            bot_state = json.load(f)
+        logger.info("Bot state loaded from file.")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning("Bot state file not found or invalid. Loading default profile.")
+        if not load_strategy_profile('default.json'):
+            # If default also fails, start with hardcoded defaults
+            bot_state = DEFAULT_SETTINGS.copy()
+            save_bot_settings()
+
+
 def get_strategy_files():
     if not os.path.exists(STRATEGIES_DIR):
         os.makedirs(STRATEGIES_DIR)
@@ -129,7 +124,7 @@ def get_strategy_files():
 # --- UI Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_name = update.effective_user.first_name
-    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v2.0 👋\n\n"
+    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v2.1 👋\n\n"
                "مساعدك الذكي لإشارات التداول.\n\n"
                "استخدم الأزرار أدناه للتحكم.")
     await update.message.reply_text(message)
@@ -143,8 +138,13 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
         [KeyboardButton("🔍 اكتشاف الأزواج النشطة"), KeyboardButton("📊 عرض الإحصائيات")]
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
-    target_message = update.callback_query.message if update.callback_query else update.message
-    await target_message.reply_text(message_text, reply_markup=reply_markup)
+    
+    # Check if the update is a callback query or a message
+    if update.callback_query:
+        await update.callback_query.message.reply_text(message_text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(message_text, reply_markup=reply_markup)
+        
     return SELECTING_ACTION
 
 async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -154,9 +154,9 @@ async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if bot_state['running']:
         message = "✅ تم تشغيل البوت.\n\nسيبدأ الآن في تحليل السوق وإرسال الإشارات الأولية وتأكيداتها."
         if not context.job_queue.get_jobs_by_name('signal_check'):
-            context.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
+            context.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check', chat_id=CHAT_ID)
         if not context.job_queue.get_jobs_by_name('confirmation_check'):
-            context.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check')
+            context.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check', chat_id=CHAT_ID)
     else:
         message = "❌ تم إيقاف البوت."
         for job in context.job_queue.get_jobs_by_name('signal_check'): job.schedule_removal()
@@ -361,7 +361,7 @@ async def check_api_connection(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- Data Fetching & Analysis ---
 async def fetch_historical_data(pair: str, interval: int, timeframe: str, limit: int) -> pd.DataFrame:
-    api_key = bot_state.get("polygon_api_key")
+    api_key = POLYGON_API_KEY
     if not api_key:
         logger.error("Polygon API key is missing.")
         return pd.DataFrame()
@@ -509,8 +509,10 @@ async def analyze_signal_strength(data: pd.DataFrame, context: ContextTypes.DEFA
     analysis_results = {
         'buy': buy_signals, 'sell': sell_signals,
         'rsi_value': last["rsi"], 'macd_value': last["macd"], 'stoch_k': last["stoch_k"],
-        'candle_buy_score': candle_patterns['buy'], 'candle_sell_score': candle_patterns['sell'],
-        'fib_buy_score': fib_scores['buy_proximity'], 'fib_sell_score': fib_scores['sell_proximity']
+        'candle_buy_score': candle_patterns['buy'],
+        'candle_sell_score': candle_patterns['sell'],
+        'fib_buy_score': fib_scores['buy_proximity'],
+        'fib_sell_score': fib_scores['sell_proximity']
     }
     return analysis_results
 
@@ -544,8 +546,7 @@ async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TY
         buy_strength, sell_strength = analysis.get('buy', 0), analysis.get('sell', 0)
         
         direction = None
-        if buy_strength >= bot_state.get('initial_confidence',
- 2) and sell_strength == 0:
+        if buy_strength >= bot_state.get('initial_confidence', 2) and sell_strength == 0:
             direction = "صعود"
         elif sell_strength >= bot_state.get('initial_confidence', 2) and buy_strength == 0:
             direction = "هبوط"
@@ -835,7 +836,7 @@ def main_bot():
                 MessageHandler(filters.Regex(r'^📁 ملفات تعريف الاستراتيجية$'), strategy_profile_menu),
                 MessageHandler(filters.Regex(r'^🚦 فلاتر الاتجاه$'), trend_filter_menu),
                 MessageHandler(filters.Regex(r'^تحديد عتبة الإشارة الأولية$'), set_confidence_menu),
-                MessageHandler(filters.Regex(r'^تحديد عتبة التأكيد النهائي$'), set_confidence_value),
+                MessageHandler(filters.Regex(r'^تحديد عتبة التأكيد النهائي$'), set_confidence_menu),
                 MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
                 MessageHandler(filters.Regex(r'^📊 استراتيجية الماكد$'), set_macd_strategy_menu),
                 MessageHandler(filters.Regex(r'^🔬 فحص اتصال API$'), check_api_connection),
@@ -851,7 +852,7 @@ def main_bot():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, set_trend_filter_mode),
             ],
             SETTING_CONFIDENCE: [
-                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu),
+                MessageHandler(filters.Regex(r'العودة إلى الإعدادات'), settings_menu), 
                 MessageHandler(filters.TEXT & ~filters.COMMAND, set_confidence_value)
             ],
             SETTING_INDICATOR: [
@@ -872,10 +873,10 @@ def main_bot():
     application.add_handler(conv_handler)
     
     if bot_state.get('running'):
-        application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check')
-        application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check')
+        application.job_queue.run_repeating(check_for_signals, interval=60, first=1, name='signal_check', chat_id=CHAT_ID)
+        application.job_queue.run_repeating(confirm_pending_signals, interval=15, first=1, name='confirmation_check', chat_id=CHAT_ID)
         
-    logger.info("Bot v2.0 is starting with Polygon.io data provider...")
+    logger.info("Bot v2.1 is starting with Polygon.io data provider...")
     application.run_polling()
 
 if __name__ == '__main__':
