@@ -22,8 +22,9 @@ import ta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler
+    ContextTypes, ConversationHandler, CallbackQueryHandler, JobQueue
 )
+
 
 from flask import Flask
 
@@ -489,13 +490,18 @@ def main() -> None:
     # تحميل حالة البوت والإحصائيات من الملف عند بدء التشغيل
     load_bot_state()
 
-    # إنشاء كائن التطبيق
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    # --- بداية التعديل ---
+    # 1. إنشاء JobQueue بشكل منفصل
+    job_queue = JobQueue()
+
+    # 2. إنشاء كائن التطبيق وتمرير job_queue إليه
+    application = Application.builder().token(TELEGRAM_TOKEN).job_queue(job_queue).build()
+    # --- نهاية التعديل ---
     
-    # جدولة المهام المتكررة (فحص الإشارات والتأكيد)
+    # جدولة المهام المتكررة باستخدام job_queue مباشرة
     scan_interval = bot_state.get('scan_interval_seconds', 300)
-    application.job_queue.run_repeating(check_for_signals, interval=scan_interval, first=10, name="SignalCheckJob")
-    application.job_queue.run_repeating(confirm_pending_signals, interval=60, first=15, name="ConfirmationJob")
+    job_queue.run_repeating(check_for_signals, interval=scan_interval, first=10, name="SignalCheckJob")
+    job_queue.run_repeating(confirm_pending_signals, interval=60, first=15, name="ConfirmationJob")
 
     # إعداد ConversationHandler الذي يدير جميع القوائم والأزرار
     conv_handler = ConversationHandler(
@@ -548,14 +554,12 @@ def main() -> None:
             ],
         },
         fallbacks=[
-            # أوامر للعودة إلى البداية أو إلغاء العملية الحالية
             CommandHandler('start', start),
             MessageHandler(filters.Regex(r'^العودة إلى القائمة الرئيسية$'), start),
             MessageHandler(filters.Regex(r'^إلغاء$'), done),
-            # معالج افتراضي للتعامل مع أي نص غير متوقع وإعادة المستخدم للقائمة الرئيسية
             MessageHandler(filters.TEXT, start) 
         ],
-        allow_reentry=True # السماح بإعادة الدخول إلى المحادثة بنفس الأمر
+        allow_reentry=True
     )
 
     # إضافة المعالج الرئيسي إلى التطبيق
@@ -567,9 +571,10 @@ def main() -> None:
     flask_thread.start()
 
     # بدء تشغيل البوت (يبدأ في الاستماع للرسائل)
-    logger.info("البوت (إصدار الميزات الكاملة v3.0) جاهز للعمل...")
+    logger.info("البوت (إصدار v3.1 - مع إصلاح JobQueue) جاهز للعمل...")
     application.run_polling()
 
 # هذا السطر يتأكد من أن دالة main() تعمل فقط عند تشغيل الملف مباشرة
 if __name__ == '__main__':
     main()
+    
