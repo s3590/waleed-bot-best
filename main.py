@@ -739,12 +739,18 @@ def main_bot():
     logger.info("Bot v2.0 is starting with Polygon.io data provider...")
     application.run_polling()
 
-if __name__ == '__main__':
-    # Run Flask app in a separate thread
-    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000))))
-    flask_thread.daemon = True
-    flask_thread.start()
-    
-    # Run the bot
+def run_bot():
+    """This function starts the bot polling."""
     main_bot()
 
+if __name__ == '__main__':
+    # Start the bot in a separate thread
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+
+    # Run the Flask app in the main thread
+    # This is often more stable on hosting platforms
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+                                            
