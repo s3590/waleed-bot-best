@@ -466,7 +466,6 @@ async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
             logger.info("Waiting for 60 seconds before next batch of signal checks...")
             await asyncio.sleep(60)
 
-
 async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TYPE, now: datetime):
     try:
         data = await fetch_historical_data(pair, 5, "minute", 150)
@@ -476,14 +475,15 @@ async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TY
         if not analysis: return
 
         buy_strength, sell_strength = analysis.get('buy', 0), analysis.get('sell', 0)
-        
+            
         direction = None
-        if buy_strength >= bot_state.get('initial_confidence', 2) and
-       sell_strength == 0:
+        # --- هذا هو السطر الذي تم إصلاحه ---
+        if buy_strength >= bot_state.get('initial_confidence', 2) and sell_strength == 0:
             direction = "صعود"
         elif sell_strength >= bot_state.get('initial_confidence', 2) and buy_strength == 0:
             direction = "هبوط"
-            
+        # --- نهاية الإصلاح ---
+                
         if direction:
             entry_time = (now + timedelta(minutes=5)).strftime("%H:%M:%S")
             direction_emoji = "🟢" if direction == "صعود" else "🔴"
@@ -495,8 +495,7 @@ async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TY
                            f"           ⏳ وقت الدخول : {entry_time}\n\n"
                            f"               🔍 {{  انتظر   التاكيد   }}")
             sent_message = await context.bot.send_message(chat_id=CHAT_ID, text=signal_text)
-            
-            # Store full analysis for confirmation and data collection
+                
             pending_signals[pair] = {
                 'direction': direction, 
                 'message_id': sent_message.message_id, 
@@ -504,10 +503,9 @@ async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TY
                 'initial_analysis': analysis
             }
             logger.info(f"Potential signal found for {pair}. Awaiting confirmation.")
-            
+                
     except Exception as e:
         await send_error_to_telegram(context, f"Error in process_single_pair_signal for {pair}: {e}")
-
 
 async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get("running") or not pending_signals:
@@ -749,3 +747,4 @@ if __name__ == '__main__':
     
     # Run the bot
     main_bot()
+
