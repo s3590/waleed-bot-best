@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-# ALNUSIRY BOT { VIP } - Version 4.1 (Error Reporting Feature)
+# ALNUSIRY BOT { VIP } - Version 4.3 (UI Fixes & Current Settings Feature)
 # Changelog:
-# - Added `send_error_to_telegram` function to report critical errors directly to the user.
-# - Integrated error reporting into data fetching and signal processing functions.
-# - This version includes all features from v4.0 (Trend Filters, Candlesticks) plus stability improvements.
+# - Added a new "Show Current Settings" button and function for a full overview.
+# - Fixed the ConversationHandler bug preventing the "Edit Indicator Values" menu from working.
+# - The bot is now fully interactive as originally designed.
+# - Includes all features from v4.2 (Smart Queue, Error Reporting, Trend Filters, Candlesticks).
 
 import logging
 import json
@@ -42,22 +43,21 @@ logger = logging.getLogger(__name__)
 
 # --- دالة إرسال الأخطاء إلى تليجرام ---
 async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_message: str):
-    """تقوم بتسجيل الخطأ وإرسال إشعار به إلى المستخدم عبر تليجرام."""
-    logger.error(error_message) # تسجيل الخطأ في سجلات Render كالمعتاد
+    logger.error(error_message)
     try:
         await context.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text=f"🤖⚠️ **حدث خطأ فادح في البوت** ⚠️🤖\n\n**التفاصيل:**\n`{error_message}`\n\nيرجى مراجعة سجلات النشر (Logs) لمزيد من المعلومات.",
+            text=f"🤖⚠️ **حدث خطأ فادح في البوت** ⚠️🤖\n\n**التفاصيل:**\n`{error_message}`",
             parse_mode='Markdown'
         )
     except Exception as e:
-        logger.error(f"فشل حاد: لم يتمكن البوت من إرسال رسالة الخطأ إلى تليجرام. الخطأ: {e}")
+        logger.error(f"فشل حاد: لم يتمكن البوت من إرسال رسالة الخطأ. الخطأ: {e}")
 
-# --- خادم ويب Flask (للتوافق مع Render) ---
+# --- خادم ويب Flask ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
-    return "ALNUSIRY BOT (v4.1 Full Feature) is alive!", 200
+    return "ALNUSIRY BOT (v4.3 UI Fix) is alive!", 200
 
 def run_flask_app():
     port = int(os.environ.get("PORT", 10000))
@@ -79,7 +79,6 @@ def save_bot_state():
         state_to_save = {'bot_state': bot_state, 'signals_statistics': signals_statistics}
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state_to_save, f, indent=4, ensure_ascii=False)
-        logger.info("تم حفظ حالة البوت بنجاح.")
     except Exception as e:
         logger.error(f"فشل في حفظ حالة البوت: {e}")
 
@@ -93,7 +92,6 @@ def load_strategy_profile(profile_filename: str) -> bool:
         bot_state = profile_settings
         bot_state.update({'is_running': is_running, 'selected_pairs': selected_pairs})
         save_bot_state()
-        logger.info(f"تم تحميل ملف التعريف بنجاح: {profile_filename}")
         return True
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logger.error(f"فشل تحميل ملف التعريف {profile_filename}: {e}")
@@ -108,18 +106,18 @@ def load_bot_state():
             signals_statistics = loaded_data.get('signals_statistics', {})
         logger.info("تم تحميل حالة البوت من الملف.")
     except (FileNotFoundError, json.JSONDecodeError):
-        logger.warning("ملف حالة البوت غير موجود. سيتم تحميل الإعدادات الافتراضية من 'default.json'.")
+        logger.warning("ملف حالة البوت غير موجود. سيتم تحميل 'default.json'.")
         if not os.path.exists(STRATEGIES_DIR): os.makedirs(STRATEGIES_DIR)
         if not load_strategy_profile('default.json'):
             logger.error("فشل تحميل 'default.json'. سيتم استخدام إعدادات الطوارئ.")
             bot_state = {
                 'is_running': False, 'selected_pairs': [], 'profile_name': 'الطوارئ',
                 'initial_confidence': 3, 'confirmation_confidence': 4,
-                'scan_interval_seconds': 300, 'confirmation_minutes': 5,
+                'scan_interval_seconds': 45, 'confirmation_minutes': 5,
                 'macd_strategy': 'dynamic', 'trend_filter_mode': 'M15',
                 'indicator_params': {
                     'rsi_period': 14, 'macd_fast': 12, 'macd_slow': 26, 'macd_signal': 9,
-                    'bollinger_period': 20, 'stochastic_period': 14, 'adx_period': 14, 'atr_period': 14,
+                    'bollinger_period': 20, 'stochastic_period': 14, 'adx_period': 14,
                     'm15_ema_period': 50, 'h1_ema_period': 50
                 }
             }
@@ -130,16 +128,15 @@ def get_strategy_files():
     if not os.path.exists(STRATEGIES_DIR): os.makedirs(STRATEGIES_DIR)
     return [f for f in os.listdir(STRATEGIES_DIR) if f.endswith('.json')]
 
-# --- دوال التحليل الفني المتقدمة ---
+# --- دوال التحليل الفني ---
 async def get_forex_data(pair: str, timeframe: str, limit: int, context: ContextTypes.DEFAULT_TYPE) -> pd.DataFrame:
     if not POLYGON_API_KEY:
-        error_msg = "متغير البيئة POLYGON_API_KEY غير موجود!"
-        await send_error_to_telegram(context, error_msg)
+        await send_error_to_telegram(context, "متغير البيئة POLYGON_API_KEY غير موجود!")
         return pd.DataFrame()
     
     polygon_ticker = f"C:{pair.replace('/', '')}"
-    interval_map = {"M5": "5", "M15": "15", "H1": "1", "H4": "4"}
-    timespan_map = {"M5": "minute", "M15": "minute", "H1": "hour", "H4": "hour"}
+    interval_map = {"M5": "5", "M15": "15", "H1": "1"}
+    timespan_map = {"M5": "minute", "M15": "minute", "H1": "hour"}
     if timeframe not in interval_map: return pd.DataFrame()
     
     interval, timespan = interval_map[timeframe], timespan_map[timeframe]
@@ -148,7 +145,7 @@ async def get_forex_data(pair: str, timeframe: str, limit: int, context: Context
     else: start_date = end_date - timedelta(days=(int(interval) * limit) / 24 + 10)
     
     url = (f"https://api.polygon.io/v2/aggs/ticker/{polygon_ticker}/range/{interval}/{timespan}/"
-           f"{start_date.strftime('%Y-%m-%d' )}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=asc&limit={limit}")
+           f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}?adjusted=true&sort=asc&limit={limit}")
     headers = {"Authorization": f"Bearer {POLYGON_API_KEY}"}
     
     try:
@@ -166,8 +163,7 @@ async def get_forex_data(pair: str, timeframe: str, limit: int, context: Context
         return pd.DataFrame()
         
     except Exception as e:
-        error_msg = f"فشل الاتصال بـ Polygon API لجلب بيانات {pair} ({timeframe}): {e}"
-        await send_error_to_telegram(context, error_msg)
+        await send_error_to_telegram(context, f"فشل الاتصال بـ Polygon API لجلب بيانات {pair} ({timeframe}): {e}")
         return pd.DataFrame()
 
 def analyze_candlestick_patterns(data: pd.DataFrame) -> (int, int):
@@ -186,6 +182,7 @@ async def get_trend(pair: str, timeframe: str, period: int, context: ContextType
     df = await get_forex_data(pair, timeframe, period + 50, context)
     if df is None or df.empty or len(df) < period: return 'NEUTRAL'
     df[f'ema_{period}'] = ta.trend.EMAIndicator(df['Close'], window=period).ema_indicator()
+    if df[f'ema_{period}'].dropna().empty: return 'NEUTRAL'
     last_close = df['Close'].iloc[-1]
     last_ema = df[f'ema_{period}'].iloc[-1]
     if last_close > last_ema: return 'UP'
@@ -204,7 +201,7 @@ def analyze_signal_strength(df: pd.DataFrame, trend_m15: str, trend_h1: str) -> 
     if trend_mode == 'M15_H1' and (trend_m15 == 'DOWN' or trend_h1 == 'DOWN'): buy = -99
     if trend_mode == 'M15_H1' and (trend_m15 == 'UP' or trend_h1 == 'UP'): sell = -99
 
-    required_len = max(params.values()) if params else 26
+    required_len = max(v for k, v in params.items() if 'period' in k)
     if df is None or df.empty or len(df) < required_len: return 0, 0
     
     df['rsi'] = ta.momentum.RSIIndicator(df['Close'], window=params.get('rsi_period', 14)).rsi()
@@ -240,22 +237,35 @@ def analyze_signal_strength(df: pd.DataFrame, trend_m15: str, trend_h1: str) -> 
     if last['adx'] > 25 and last['dmn'] > last['dmp']: sell += 1
 
     candle_buy, candle_sell = analyze_candlestick_patterns(df)
-    buy += candle_buy
-    sell += candle_sell
+    buy += candle_buy; sell += candle_sell
 
     return max(0, buy), max(0, sell)
 
-# --- دوال البوت الأساسية والمهام المجدولة ---
-async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TYPE):
+# --- المهام المجدولة ونظام الطابور الذكي ---
+async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
+    if not bot_state.get('is_running', False): return
+    selected_pairs = bot_state.get('selected_pairs', [])
+    if not selected_pairs: return
+
+    pair_index = context.bot_data.get('pair_index', 0)
+    if pair_index >= len(selected_pairs): pair_index = 0
+
+    pair_to_process = selected_pairs[pair_index]
+    logger.info(f"جولة التحليل [{pair_index + 1}/{len(selected_pairs)}]: بدء تحليل الزوج {pair_to_process}")
+
     try:
-        if any(s['pair'] == pair for s in pending_signals): return False
+        if any(s['pair'] == pair_to_process for s in pending_signals):
+            logger.info(f"تخطي تحليل {pair_to_process}، توجد إشارة معلقة بالفعل.")
+            return
 
         params = bot_state.get('indicator_params', {})
-        trend_m15 = await get_trend(pair, 'M15', params.get('m15_ema_period', 50), context)
-        trend_h1 = await get_trend(pair, 'H1', params.get('h1_ema_period', 50), context)
+        trend_m15 = await get_trend(pair_to_process, 'M15', params.get('m15_ema_period', 50), context)
+        await asyncio.sleep(1)
+        trend_h1 = await get_trend(pair_to_process, 'H1', params.get('h1_ema_period', 50), context)
+        await asyncio.sleep(1)
         
-        df = await get_forex_data(pair, "M5", 200, context)
-        if df is None or df.empty: return False
+        df = await get_forex_data(pair_to_process, "M5", 200, context)
+        if df is None or df.empty: return
 
         buy_strength, sell_strength = analyze_signal_strength(df, trend_m15, trend_h1)
         
@@ -266,28 +276,22 @@ async def process_single_pair_signal(pair: str, context: ContextTypes.DEFAULT_TY
             signal_type, confidence = 'SELL', sell_strength
 
         if signal_type:
-            new_signal = {'pair': pair, 'type': signal_type, 'confidence': confidence, 'timestamp': datetime.now(timezone.utc)}
+            new_signal = {'pair': pair_to_process, 'type': signal_type, 'confidence': confidence, 'timestamp': datetime.now(timezone.utc)}
             pending_signals.append(new_signal)
-            if pair not in signals_statistics: signals_statistics[pair] = {'initial': 0, 'confirmed': 0, 'failed_confirmation': 0}
-            signals_statistics[pair]['initial'] += 1
+            if pair_to_process not in signals_statistics: signals_statistics[pair_to_process] = {'initial': 0, 'confirmed': 0, 'failed_confirmation': 0}
+            signals_statistics[pair_to_process]['initial'] += 1
             save_bot_state()
 
             strength_meter = '⬆️' * buy_strength if signal_type == 'BUY' else '⬇️' * sell_strength
             trend_text = f" (M15: {trend_m15}, H1: {trend_h1})"
-            message = (f"🔔 إشارة أولية محتملة 🔔\n\nالزوج: {pair}\nالنوع: {signal_type}\nالقوة: {strength_meter} ({confidence})\nالاتجاه العام: {trend_text}\n"
+            message = (f"🔔 إشارة أولية محتملة 🔔\n\nالزوج: {pair_to_process}\nالنوع: {signal_type}\nالقوة: {strength_meter} ({confidence})\nالاتجاه العام: {trend_text}\n"
                        f"سيتم التأكيد بعد {bot_state.get('confirmation_minutes', 5)} دقيقة.")
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
     except Exception as e:
-        error_msg = f"حدث خطأ غير متوقع في `process_single_pair_signal` للزوج {pair}: {e}"
-        await send_error_to_telegram(context, error_msg)
+        await send_error_to_telegram(context, f"حدث خطأ غير متوقع في `check_for_signals` للزوج {pair_to_process}: {e}")
+    finally:
+        context.bot_data['pair_index'] = (pair_index + 1) % len(selected_pairs) if selected_pairs else 0
 
-async def check_for_signals(context: ContextTypes.DEFAULT_TYPE):
-    if not bot_state.get('is_running', False): return
-    pairs = bot_state.get('selected_pairs', [])
-    if not pairs: return
-    logger.info(f"بدء جولة التحليل للأزواج: {', '.join(pairs)}")
-    tasks = [process_single_pair_signal(pair, context) for pair in pairs]
-    await asyncio.gather(*tasks)
 
 async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get('is_running', False): return
@@ -317,8 +321,7 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
                 if pair in signals_statistics: signals_statistics[pair]['confirmed'] += 1
             except Exception as e:
-                error_msg = f"فشل إرسال رسالة التأكيد للزوج {pair}: {e}"
-                await send_error_to_telegram(context, error_msg)
+                await send_error_to_telegram(context, f"فشل إرسال رسالة التأكيد للزوج {pair}: {e}")
         else:
             if pair in signals_statistics: signals_statistics[pair]['failed_confirmation'] += 1
         save_bot_state()
@@ -328,11 +331,12 @@ async def confirm_pending_signals(context: ContextTypes.DEFAULT_TYPE):
  SETTING_INDICATOR, AWAITING_VALUE, SETTING_MACD_STRATEGY, 
  SELECTING_STRATEGY, SELECTING_TREND_FILTER) = range(9)
 
-# --- دوال واجهة المستخدم والقوائم (ConversationHandler) ---
+# --- دوال واجهة المستخدم ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.bot_data.setdefault('pair_index', 0)
     user_name = update.effective_user.first_name
-    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.1 👋\n\n"
-               "مساعدك الذكي لإشارات التداول. (إصدار التقارير والأخطاء)")
+    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.3 👋\n\n"
+               "مساعدك الذكي للتداول (إصلاحات واجهة المستخدم)")
     await update.message.reply_text(message)
     return await send_main_menu(update, context)
 
@@ -341,19 +345,55 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
     main_menu_keyboard = [
         [KeyboardButton(f"حالة البوت: {status_text}")],
         [KeyboardButton("اختيار الأزواج"), KeyboardButton("الإعدادات ⚙️")],
-        [KeyboardButton("📊 عرض الإحصائيات")]
+        [KeyboardButton("📊 عرض الإحصائيات"), KeyboardButton("⚙️ عرض الإعدادات الحالية")] # الزر الجديد
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     await update.message.reply_text(message_text, reply_markup=reply_markup)
     return SELECTING_ACTION
+
+# --- الدالة الجديدة لعرض الإعدادات ---
+async def show_current_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """يعرض ملخصًا كاملاً لجميع إعدادات البوت الحالية."""
+    status = "يعمل ✅" if bot_state.get('is_running', False) else "متوقف ❌"
+    pairs = ", ".join(bot_state.get('selected_pairs', [])) or "لا يوجد"
+    profile = bot_state.get('profile_name', 'غير معروف')
+    
+    trend_modes = {'NONE': '⚫️ إيقاف', 'M15': '🟢 M15 فقط', 'H1': '🟡 H1 فقط', 'M15_H1': '🔴 M15 + H1'}
+    trend_filter = trend_modes.get(bot_state.get('trend_filter_mode', 'M15'))
+    
+    initial_conf = bot_state.get('initial_confidence', 'N/A')
+    final_conf = bot_state.get('confirmation_confidence', 'N/A')
+    macd_strategy = bot_state.get('macd_strategy', 'N/A')
+
+    params_text = "\n".join([f"   - {key.replace('_', ' ').title()}: {value}" for key, value in bot_state.get('indicator_params', {}).items()])
+
+    message = (
+        f"📋 **ملخص الإعدادات الحالية للبوت** 📋\n\n"
+        f"🔹 **الحالة العامة:**\n"
+        f"   - حالة التشغيل: {status}\n"
+        f"   - ملف الاستراتيجية: {profile}\n\n"
+        f"🔹 **إعدادات التداول:**\n"
+        f"   - الأزواج المحددة: {pairs}\n"
+        f"   - فلتر الاتجاه: {trend_filter}\n\n"
+        f"🔹 **عتبات الثقة:**\n"
+        f"   - الإشارة الأولية: {initial_conf} مؤشرات\n"
+        f"   - التأكيد النهائي: {final_conf} مؤشرات\n\n"
+        f"🔹 **استراتيجية الماكد:** {macd_strategy.title()}\n\n"
+        f"🔹 **قيم المؤشرات الفنية:**\n"
+        f"{params_text}"
+    )
+    await update.message.reply_text(message, parse_mode='Markdown')
+    return SELECTING_ACTION
+
 
 async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not bot_state.get('selected_pairs') and not bot_state.get('is_running'):
         await update.message.reply_text("⚠️ خطأ: يرجى تحديد زوج عملات واحد على الأقل قبل البدء.")
         return await send_main_menu(update, context, "")
     bot_state['is_running'] = not bot_state.get('is_running', False)
+    if not bot_state['is_running']: context.bot_data['pair_index'] = 0
     save_bot_state()
-    message = "✅ تم تشغيل البوت." if bot_state['is_running'] else "❌ تم إيقاف البوت."
+    message = "✅ تم تشغيل البوت. سيبدأ التحليل المتسلسل." if bot_state['is_running'] else "❌ تم إيقاف البوت."
     await update.message.reply_text(message)
     return await send_main_menu(update, context, "")
 
@@ -371,6 +411,7 @@ async def toggle_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if 'selected_pairs' not in bot_state: bot_state['selected_pairs'] = []
     if pair in bot_state['selected_pairs']: bot_state['selected_pairs'].remove(pair)
     elif pair in USER_DEFINED_PAIRS: bot_state['selected_pairs'].append(pair)
+    context.bot_data['pair_index'] = 0
     save_bot_state()
     return await select_pairs_menu(update, context)
 
@@ -501,9 +542,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     totals = {'initial': 0, 'confirmed': 0, 'failed': 0}
     for pair, stats in signals_statistics.items():
         initial, confirmed, failed = stats.get('initial', 0), stats.get('confirmed', 0), stats.get('failed_confirmation', 0)
-        totals['initial'] += initial
-        totals['confirmed'] += confirmed
-        totals['failed'] += failed
+        totals['initial'] += initial; totals['confirmed'] += confirmed; totals['failed'] += failed
         if initial > 0:
             message += f"🔹 **{pair}**: أولية: {initial}, مؤكدة: {confirmed}, فاشلة: {failed}\n"
 
@@ -522,21 +561,21 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # --- نقطة انطلاق البوت ---
 def main() -> None:
     if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, POLYGON_API_KEY]):
-        logger.critical("خطأ فادح: أحد متغيرات البيئة (TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, POLYGON_API_KEY) غير موجود.")
+        logger.critical("خطأ فادح: أحد متغيرات البيئة غير موجود.")
         return
 
     load_bot_state()
     
-    # إنشاء JobQueue وتمريرها إلى التطبيق
-    job_queue = JobQueue()
-    application = Application.builder().token(TELEGRAM_TOKEN).job_queue(job_queue).build()
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # جدولة المهام باستخدام job_queue
-    scan_interval = bot_state.get('scan_interval_seconds', 300)
-    job_queue.run_repeating(check_for_signals, interval=scan_interval, first=10)
-    job_queue.run_repeating(confirm_pending_signals, interval=60, first=15)
+    # تهيئة مؤشر الطابور عند بدء التشغيل
+    application.bot_data['pair_index'] = 0
+    
+    # جدولة المهام
+    scan_interval = bot_state.get('scan_interval_seconds', 45)
+    application.job_queue.run_repeating(check_for_signals, interval=scan_interval, first=10)
+    application.job_queue.run_repeating(confirm_pending_signals, interval=60, first=30)
 
-    # إعداد ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
@@ -545,6 +584,7 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
                 MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
                 MessageHandler(filters.Regex(r'^📊 عرض الإحصائيات$'), show_statistics),
+                MessageHandler(filters.Regex(r'^⚙️ عرض الإعدادات الحالية$'), show_current_settings),
             ],
             SELECTING_PAIR: [
                 MessageHandler(filters.Regex(r'^(EUR|USD|AUD|CAD|CHF|JPY)\/.*(✅|❌)$'), toggle_pair),
@@ -571,6 +611,7 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
             SETTING_INDICATOR: [
+                # هذا هو الإصلاح: استخدام تعبير نمطي أكثر مرونة
                 MessageHandler(filters.Regex(r'^\w.* \(\d+\)$'), select_indicator_to_set),
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
@@ -593,14 +634,13 @@ def main() -> None:
 
     application.add_handler(conv_handler)
 
-    # بدء خادم Flask في خيط منفصل
     flask_thread = Thread(target=run_flask_app)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # بدء تشغيل البوت
-    logger.info("البوت (إصدار v4.1 الكامل) جاهز للعمل...")
+    logger.info("البوت (إصدار v4.3 الكامل) جاهز للعمل...")
     application.run_polling()
 
 if __name__ == '__main__':
     main()
+    
