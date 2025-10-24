@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-# ALNUSIRY BOT { VIP } - Version 4.5 (The Governor Engine)
+# ALNUSIRY BOT { VIP } - Version 4.6 (The Final Runtime Fix)
 # Changelog:
-# - FINAL, ROBUST FIX for "429 Too Many Requests".
-# - Implemented a "Governor" pattern. A single `governor_loop` strictly controls all API calls.
-# - It uses a timestamp queue to ensure no more than 4 API calls are made in any 60-second window.
-# - The logic loop (`logic_loop`) now only adds requests to a queue; it never makes direct API calls.
-# - FINALLY fixed the ConversationHandler bug preventing indicator value buttons from working.
-# - This is the most stable and reliable version, designed for long-term operation.
+# - FINAL, ROBUST FIX for the "RuntimeError: no running event loop".
+# - Used the `post_init` hook of the Application builder to safely start the `governor_loop` coroutine.
+# - This ensures the event loop is running BEFORE the governor task is created.
+# - This is the definitive, stable version incorporating all previous fixes and features.
 
 import logging
 import json
@@ -46,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # --- متغيرات محرك الحاكم (Governor Engine) ---
 api_request_queue = asyncio.Queue()
-api_call_timestamps = deque(maxlen=4) # لتخزين أوقات آخر 4 طلبات
+api_call_timestamps = deque(maxlen=4)
 
 # --- دالة إرسال الأخطاء إلى تليجرام ---
 async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_message: str):
@@ -64,7 +62,7 @@ async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_messa
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
-    return "ALNUSIRY BOT (v4.5 Governor Engine) is alive!", 200
+    return "ALNUSIRY BOT (v4.6 Final Fix) is alive!", 200
 
 def run_flask_app():
     port = int(os.environ.get("PORT", 10000))
@@ -240,45 +238,32 @@ def analyze_signal_strength(df: pd.DataFrame, trend_m15: str, trend_h1: str) -> 
 # --- محرك الحاكم والمنطق (Governor and Logic Engine) ---
 
 async def governor_loop(context: ContextTypes.DEFAULT_TYPE):
-    """
-    شرطي المرور: يعمل كل ثانية، وينفذ طلبًا واحدًا فقط من الطابور
-    إذا كانت قواعد المرور (4 طلبات/دقيقة) تسمح بذلك.
-    """
+    logger.info("محرك الحاكم (Governor) بدأ بالعمل...")
     while True:
-        await asyncio.sleep(1) # يعمل كل ثانية
+        await asyncio.sleep(1)
         
         now = datetime.now(timezone.utc)
         
-        # إزالة الطوابع الزمنية القديمة (التي مر عليها أكثر من 60 ثانية)
         while api_call_timestamps and (now - api_call_timestamps[0]).total_seconds() > 60:
             api_call_timestamps.popleft()
 
-        # التحقق مما إذا كان يمكننا إجراء طلب جديد
         if len(api_call_timestamps) < 4 and not api_request_queue.empty():
             request = await api_request_queue.get()
             
-            # تسجيل وقت الطلب قبل تنفيذه
             api_call_timestamps.append(now)
             logger.info(f"الحاكم: السماح بطلب API. الطلبات في آخر دقيقة: {len(api_call_timestamps)}/4")
 
-            # تنفيذ الطلب
             pair, timeframe, limit, callback = request['pair'], request['timeframe'], request['limit'], request['callback']
             df = await execute_get_forex_data(pair, timeframe, limit, context)
             
-            # استدعاء الدالة التالية بالبيانات التي تم جلبها
             if callback:
                 asyncio.create_task(callback(df, pair, context))
             
             api_request_queue.task_done()
 
 async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
-    """
-    العقل المدبر: يعمل كل 5 ثوانٍ، ويضيف الطلبات اللازمة إلى الطابور
-    ليقوم الحاكم بتنفيذها. لا يقوم بأي طلبات API بنفسه.
-    """
     if not bot_state.get('is_running', False): return
 
-    # --- الخطوة 1: إضافة طلبات التأكيد (الأولوية القصوى) ---
     current_time = datetime.now(timezone.utc)
     confirmation_minutes = bot_state.get('confirmation_minutes', 5)
     
@@ -286,11 +271,8 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
 
     if signal_to_confirm:
         logger.info(f"المنطق: إضافة طلب تأكيد للزوج {signal_to_confirm['pair']} إلى الطابور.")
-        
-        # إزالة الإشارة من القائمة لمنع إضافتها مرة أخرى
         pending_signals.remove(signal_to_confirm)
         
-        # تعريف دالة الكول باك التي سيتم استدعاؤها بعد جلب البيانات
         async def confirmation_callback(df, pair, context):
             logger.info(f"الكول باك: تم استلام بيانات التأكيد للزوج {pair}.")
             initial_type = signal_to_confirm['type']
@@ -316,16 +298,11 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
                 if pair in signals_statistics: signals_statistics[pair]['failed_confirmation'] += 1
                 save_bot_state()
 
-        # إضافة الطلب إلى طابور الحاكم
         await api_request_queue.put({
-            'pair': signal_to_confirm['pair'],
-            'timeframe': 'M5',
-            'limit': 200,
-            'callback': confirmation_callback
+            'pair': signal_to_confirm['pair'], 'timeframe': 'M5', 'limit': 200, 'callback': confirmation_callback
         })
-        return # الانتهاء من هذه الدورة للتركيز على التأكيد
+        return
 
-    # --- الخطوة 2: إضافة طلب تحليل زوج جديد ---
     selected_pairs = bot_state.get('selected_pairs', [])
     if not selected_pairs: return
 
@@ -334,26 +311,51 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
 
     pair_to_process = selected_pairs[pair_index]
     
-    # التحقق مما إذا كان هناك طلبات تحليل لنفس الزوج قيد الانتظار بالفعل
-    if any(req['callback'].__name__ == 'analysis_callback' and req['pair'] == pair_to_process for req in api_request_queue._queue):
+    if any(req.get('metadata') == f"analysis_{pair_to_process}" for req in api_request_queue._queue):
         logger.info(f"المنطق: تخطي إضافة طلب تحليل لـ {pair_to_process}، يوجد طلب بالفعل في الطابور.")
-        context.bot_data['pair_index'] = (pair_index + 1) % len(selected_pairs) if selected_pairs else 0
+        context.bot_data['pair_index'] = (pair_index + 1) % len(selected_pairs)
         return
 
-    logger.info(f"المنطق: إضافة طلب تحليل للزوج {pair_to_process} إلى الطابور.")
+    logger.info(f"المنطق: إضافة طلبات تحليل للزوج {pair_to_process} إلى الطابور.")
 
-    async def analysis_callback(df_m5, pair, context):
-        if df_m5 is None or df_m5.empty: return
+    # --- إعادة تصميم الكول باك لتجنب طلبات متداخلة ---
+    context.bot_data[f'trend_data_{pair_to_process}'] = {}
+
+    async def h1_callback(df, pair, context):
+        if df is not None and not df.empty:
+            params = bot_state.get('indicator_params', {})
+            period = params.get('h1_ema_period', 50)
+            df[f'ema_{period}'] = ta.trend.EMAIndicator(df['Close'], window=period).ema_indicator()
+            if not df[f'ema_{period}'].dropna().empty:
+                trend = 'UP' if df['Close'].iloc[-1] > df[f'ema_{period}'].iloc[-1] else 'DOWN'
+                context.bot_data[f'trend_data_{pair}']['h1'] = trend
         
-        # جلب بيانات الاتجاه (هذه ستكون طلبات جديدة تضاف للطابور)
-        # هذا الجزء معقد، سنقوم بتبسيطه الآن ونطلب البيانات مباشرة هنا
-        # ولكن مع العلم أن هذا قد يؤدي إلى تأخير. الحل الأفضل يتطلب state machine.
-        # للتبسيط الآن، سنقوم بالطلب مباشرة.
-        params = bot_state.get('indicator_params', {})
-        trend_m15 = await get_trend(pair, 'M15', params.get('m15_ema_period', 50), context)
-        trend_h1 = await get_trend(pair, 'H1', params.get('h1_ema_period', 50), context)
+        # بعد الانتهاء من H1، اطلب M5
+        await api_request_queue.put({
+            'pair': pair, 'timeframe': 'M5', 'limit': 200, 'callback': m5_callback, 'metadata': f"analysis_{pair}"
+        })
+
+    async def m15_callback(df, pair, context):
+        if df is not None and not df.empty:
+            params = bot_state.get('indicator_params', {})
+            period = params.get('m15_ema_period', 50)
+            df[f'ema_{period}'] = ta.trend.EMAIndicator(df['Close'], window=period).ema_indicator()
+            if not df[f'ema_{period}'].dropna().empty:
+                trend = 'UP' if df['Close'].iloc[-1] > df[f'ema_{period}'].iloc[-1] else 'DOWN'
+                context.bot_data[f'trend_data_{pair}']['m15'] = trend
+
+        # بعد الانتهاء من M15، اطلب H1
+        await api_request_queue.put({
+            'pair': pair, 'timeframe': 'H1', 'limit': 150, 'callback': h1_callback, 'metadata': f"analysis_{pair}"
+        })
+
+    async def m5_callback(df, pair, context):
+        if df is None or df.empty: return
+
+        trend_m15 = context.bot_data.get(f'trend_data_{pair}', {}).get('m15', 'NEUTRAL')
+        trend_h1 = context.bot_data.get(f'trend_data_{pair}', {}).get('h1', 'NEUTRAL')
         
-        buy_strength, sell_strength = analyze_signal_strength(df_m5, trend_m15, trend_h1)
+        buy_strength, sell_strength = analyze_signal_strength(df, trend_m15, trend_h1)
         
         signal_type, confidence = (None, 0)
         if buy_strength > sell_strength and buy_strength >= bot_state.get('initial_confidence', 3):
@@ -373,18 +375,17 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
             message = (f"🔔 إشارة أولية محتملة 🔔\n\nالزوج: {pair}\nالنوع: {signal_type}\nالقوة: {strength_meter} ({confidence})\nالاتجاه العام: {trend_text}\n"
                        f"سيتم التأكيد بعد {bot_state.get('confirmation_minutes', 5)} دقيقة.")
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        
+        # تنظيف البيانات بعد الاستخدام
+        if f'trend_data_{pair}' in context.bot_data:
+            del context.bot_data[f'trend_data_{pair}']
 
-    # إضافة طلب M5 أولاً
+    # بدء سلسلة الطلبات: اطلب M15 أولاً
     await api_request_queue.put({
-        'pair': pair_to_process,
-        'timeframe': 'M5',
-        'limit': 200,
-        'callback': analysis_callback
+        'pair': pair_to_process, 'timeframe': 'M15', 'limit': 150, 'callback': m15_callback, 'metadata': f"analysis_{pair_to_process}"
     })
 
-    # الانتقال إلى الزوج التالي في الدورة القادمة
-    context.bot_data['pair_index'] = (pair_index + 1) % len(selected_pairs) if selected_pairs else 0
-
+    context.bot_data['pair_index'] = (pair_index + 1) % len(selected_pairs)
 
 # --- تعريف حالات المحادثة ---
 (SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, 
@@ -395,8 +396,8 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.bot_data.setdefault('pair_index', 0)
     user_name = update.effective_user.first_name
-    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.5 👋\n\n"
-               "مساعدك الذكي للتداول (محرك الحاكم المستقر)")
+    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.6 👋\n\n"
+               "مساعدك الذكي للتداول (الإصدار النهائي المستقر)")
     await update.message.reply_text(message)
     return await send_main_menu(update, context)
 
@@ -615,6 +616,14 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("تم الإلغاء.")
     return await send_main_menu(update, context)
 
+# --- دالة التشغيل بعد التهيئة (للإصلاح النهائي) ---
+async def post_init(application: Application) -> None:
+    """
+    يتم استدعاؤها بعد تهيئة التطبيق. المكان الآمن لبدء المهام الخلفية.
+    """
+    logger.info("Application initialized. Starting background tasks.")
+    asyncio.create_task(governor_loop(application))
+
 # --- نقطة انطلاق البوت ---
 def main() -> None:
     if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, POLYGON_API_KEY]):
@@ -623,17 +632,12 @@ def main() -> None:
 
     load_bot_state()
     
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
-    # تهيئة المتغيرات عند بدء التشغيل
     application.bot_data['pair_index'] = 0
     
-    # جدولة المهام
     logic_interval = bot_state.get('scan_interval_seconds', 5)
     application.job_queue.run_repeating(logic_loop, interval=logic_interval, first=5)
-    
-    # تشغيل مهمة الحاكم في الخلفية
-    asyncio.create_task(governor_loop(application))
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -670,7 +674,6 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
             SETTING_INDICATOR: [
-                # الإصلاح النهائي: تعبير نمطي مرن جدًا
                 MessageHandler(filters.Regex(r'^\w[\w\s]* \(\d+\)$'), select_indicator_to_set),
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
@@ -697,7 +700,7 @@ def main() -> None:
     flask_thread.daemon = True
     flask_thread.start()
 
-    logger.info("البوت (إصدار v4.5 محرك الحاكم) جاهز للعمل...")
+    logger.info("البوت (إصدار v4.6 النهائي) جاهز للعمل...")
     application.run_polling()
 
 if __name__ == '__main__':
