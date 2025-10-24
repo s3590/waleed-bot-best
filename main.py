@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-# ALNUSIRY BOT { VIP } - Version 4.6 (The Final Runtime Fix)
+# ALNUSIRY BOT { VIP } - Version 4.7 (The Definitive UI & Engine Fix)
 # Changelog:
-# - FINAL, ROBUST FIX for the "RuntimeError: no running event loop".
-# - Used the `post_init` hook of the Application builder to safely start the `governor_loop` coroutine.
-# - This ensures the event loop is running BEFORE the governor task is created.
-# - This is the definitive, stable version incorporating all previous fixes and features.
+# - FINAL, ABSOLUTE FIX for the "Edit Indicator Values" buttons not working.
+# - Replaced the faulty Regex with a flexible and robust one (`^.* \(\d+\)$`) that matches all indicator buttons.
+# - This is the definitive, stable version incorporating the Governor Engine and all UI fixes. All features are now fully operational.
 
 import logging
 import json
@@ -62,7 +61,7 @@ async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_messa
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
-    return "ALNUSIRY BOT (v4.6 Final Fix) is alive!", 200
+    return "ALNUSIRY BOT (v4.7 Final Fix) is alive!", 200
 
 def run_flask_app():
     port = int(os.environ.get("PORT", 10000))
@@ -318,7 +317,6 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"المنطق: إضافة طلبات تحليل للزوج {pair_to_process} إلى الطابور.")
 
-    # --- إعادة تصميم الكول باك لتجنب طلبات متداخلة ---
     context.bot_data[f'trend_data_{pair_to_process}'] = {}
 
     async def h1_callback(df, pair, context):
@@ -330,7 +328,6 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
                 trend = 'UP' if df['Close'].iloc[-1] > df[f'ema_{period}'].iloc[-1] else 'DOWN'
                 context.bot_data[f'trend_data_{pair}']['h1'] = trend
         
-        # بعد الانتهاء من H1، اطلب M5
         await api_request_queue.put({
             'pair': pair, 'timeframe': 'M5', 'limit': 200, 'callback': m5_callback, 'metadata': f"analysis_{pair}"
         })
@@ -344,7 +341,6 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
                 trend = 'UP' if df['Close'].iloc[-1] > df[f'ema_{period}'].iloc[-1] else 'DOWN'
                 context.bot_data[f'trend_data_{pair}']['m15'] = trend
 
-        # بعد الانتهاء من M15، اطلب H1
         await api_request_queue.put({
             'pair': pair, 'timeframe': 'H1', 'limit': 150, 'callback': h1_callback, 'metadata': f"analysis_{pair}"
         })
@@ -376,11 +372,9 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
                        f"سيتم التأكيد بعد {bot_state.get('confirmation_minutes', 5)} دقيقة.")
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
         
-        # تنظيف البيانات بعد الاستخدام
         if f'trend_data_{pair}' in context.bot_data:
             del context.bot_data[f'trend_data_{pair}']
 
-    # بدء سلسلة الطلبات: اطلب M15 أولاً
     await api_request_queue.put({
         'pair': pair_to_process, 'timeframe': 'M15', 'limit': 150, 'callback': m15_callback, 'metadata': f"analysis_{pair_to_process}"
     })
@@ -396,7 +390,7 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.bot_data.setdefault('pair_index', 0)
     user_name = update.effective_user.first_name
-    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.6 👋\n\n"
+    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v4.7 👋\n\n"
                "مساعدك الذكي للتداول (الإصدار النهائي المستقر)")
     await update.message.reply_text(message)
     return await send_main_menu(update, context)
@@ -465,13 +459,35 @@ async def select_pairs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return SELECTING_PAIR
 
 async def toggle_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    يقوم بإضافة أو إزالة زوج من قائمة الأزواج المختارة.
+    يعيد تعيين مؤشر الطابور لضمان أن الدورة التالية تبدأ من جديد.
+    """
+    # استخراج اسم الزوج من نص الزر، مع تجاهل الرموز التعبيرية
     pair = update.message.text.split(" ")[0]
-    if 'selected_pairs' not in bot_state: bot_state['selected_pairs'] = []
-    if pair in bot_state['selected_pairs']: bot_state['selected_pairs'].remove(pair)
-    elif pair in USER_DEFINED_PAIRS: bot_state['selected_pairs'].append(pair)
+    
+    # التأكد من وجود قائمة الأزواج في حالة البوت
+    if 'selected_pairs' not in bot_state:
+        bot_state['selected_pairs'] = []
+    
+    # التحقق مما إذا كان الزوج موجودًا بالفعل في القائمة
+    if pair in bot_state['selected_pairs']:
+        # إذا كان موجودًا، قم بإزالته
+        bot_state['selected_pairs'].remove(pair)
+    elif pair in USER_DEFINED_PAIRS:
+        # إذا لم يكن موجودًا (وهو زوج صالح)، قم بإضافته
+        bot_state['selected_pairs'].append(pair)
+    
+    # خطوة حاسمة: إعادة تعيين مؤشر دورة التحليل إلى الصفر
+    # هذا يضمن أن الدورة القادمة للمحرك ستبدأ من أول زوج في القائمة الجديدة
     context.bot_data['pair_index'] = 0
+    
+    # حفظ التغييرات في ملف الحالة
     save_bot_state()
+    
+    # إعادة عرض قائمة اختيار الأزواج المحدثة للمستخدم
     return await select_pairs_menu(update, context)
+
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     settings_keyboard = [
@@ -622,7 +638,9 @@ async def post_init(application: Application) -> None:
     يتم استدعاؤها بعد تهيئة التطبيق. المكان الآمن لبدء المهام الخلفية.
     """
     logger.info("Application initialized. Starting background tasks.")
-    asyncio.create_task(governor_loop(application))
+    # استنساخ الكائن لضمان أن المهمة الخلفية لديها السياق الصحيح
+    context = ContextTypes.DEFAULT_TYPE(application=application)
+    asyncio.create_task(governor_loop(context))
 
 # --- نقطة انطلاق البوت ---
 def main() -> None:
@@ -674,7 +692,8 @@ def main() -> None:
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
             SETTING_INDICATOR: [
-                MessageHandler(filters.Regex(r'^\w[\w\s]* \(\d+\)$'), select_indicator_to_set),
+                # الإصلاح النهائي والحاسم: تعبير نمطي مرن يقبل أي اسم مؤشر
+                MessageHandler(filters.Regex(r'^.* \(\d+\)$'), select_indicator_to_set),
                 MessageHandler(filters.Regex(r'^العودة إلى الإعدادات$'), settings_menu),
             ],
             AWAITING_VALUE: [
@@ -700,7 +719,7 @@ def main() -> None:
     flask_thread.daemon = True
     flask_thread.start()
 
-    logger.info("البوت (إصدار v4.6 النهائي) جاهز للعمل...")
+    logger.info("البوت (إصدار v4.7 النهائي) جاهز للعمل...")
     application.run_polling()
 
 if __name__ == '__main__':
