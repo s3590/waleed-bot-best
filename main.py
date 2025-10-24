@@ -496,7 +496,7 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         [KeyboardButton("تعديل قيم المؤشرات"), KeyboardButton("📊 استراتيجية الماكد")],
         [KeyboardButton("العودة إلى القائمة الرئيسية")]
     ]
-    reply_markup = ReplyKeyboardMarkup(settings_keyboard, resize_keyboard=True, one__init(post_init)).build()
+    reply_markup = ReplyKeyboardMarkup(settings_keyboard, resize_keyboard=True, one_time_keyboard=True
     
     application.bot_data['pair_index'] = 0
     
@@ -556,5 +556,6 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 if __name__ == '__main__':
     main()
+
 
 
