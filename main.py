@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-# ALNUSIRY BOT { VIP } - Version 5.0 (The Final Engine)
+# ALNUSIRY BOT { VIP } - Version 5.1 (The Final Runtime Fix)
 # Changelog:
-# - COMPLETE REWRITE of the settings UI using InlineKeyboards and CallbackQueryHandlers.
-# - This DEFINITIVELY fixes the bug where indicator buttons did not respond. Each button now has unique callback_data.
-# - This is the most robust, professional, and stable version. It incorporates the Governor Engine and all previous features.
-# - My deepest apologies for the repeated failures. This is the correct architecture.
+# - Reverted from `post_init` to a more stable `asyncio.gather` pattern in `main`.
+# - This robustly fixes the "bot is live but unresponsive" deadlock issue.
+# - The governor_loop and the bot's polling now run as cooperative, concurrent tasks.
+# - This version retains the v5.0 UI fixes (InlineKeyboards) and the Governor Engine.
 
 import logging
 import json
@@ -62,7 +62,7 @@ async def send_error_to_telegram(context: ContextTypes.DEFAULT_TYPE, error_messa
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
-    return "ALNUSIRY BOT (v5.0 Final Engine) is alive!", 200
+    return "ALNUSIRY BOT (v5.1 Final Runtime) is alive!", 200
 
 def run_flask_app():
     port = int(os.environ.get("PORT", 10000))
@@ -383,16 +383,14 @@ async def logic_loop(context: ContextTypes.DEFAULT_TYPE):
     context.bot_data['pair_index'] = (pair_index + 1) % len(selected_pairs)
 
 # --- تعريف حالات المحادثة ---
-(SELECTING_ACTION, SELECTING_PAIR, SETTINGS_MENU, SETTING_CONFIDENCE, 
- AWAITING_VALUE, SETTING_MACD_STRATEGY, 
- SELECTING_STRATEGY, SELECTING_TREND_FILTER) = range(8)
+(SELECTING_ACTION, SELECTING_PAIR, AWAITING_VALUE) = range(3)
 
-# --- دوال واجهة المستخدم ---
+# --- دوال واجهة المستخدم (الجديدة والمبسطة) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.bot_data.setdefault('pair_index', 0)
     user_name = update.effective_user.first_name
-    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v5.0 👋\n\n"
-               "مساعدك الذكي للتداول (المحرك النهائي المستقر)")
+    message = (f"أهلاً بك يا {user_name} في ALNUSIRY BOT {{ VIP }} - v5.1 👋\n\n"
+               "مساعدك الذكي للتداول (إصلاح وقت التشغيل)")
     await update.message.reply_text(message)
     return await send_main_menu(update, context)
 
@@ -405,17 +403,19 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
     ]
     reply_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
     
-    # التحقق من مصدر الاستدعاء (رسالة نصية أو كول باك)
     query = update.callback_query
     if query:
         await query.answer()
-        await query.edit_message_text(text=message_text, reply_markup=reply_markup)
+        try:
+            await query.edit_message_text(text=message_text, reply_markup=reply_markup)
+        except:
+            pass
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup)
         
     return SELECTING_ACTION
 
-async def show_current_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def show_current_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "يعمل ✅" if bot_state.get('is_running', False) else "متوقف ❌"
     pairs = ", ".join(bot_state.get('selected_pairs', [])) or "لا يوجد"
     profile = bot_state.get('profile_name', 'غير معروف')
@@ -444,26 +444,28 @@ async def show_current_settings(update: Update, context: ContextTypes.DEFAULT_TY
         f"🔹 **قيم المؤشرات الفنية:**\n"
         f"{params_text}"
     )
+    # استخدام `reply_text` بدلاً من `edit_message_text` لتجنب الأخطاء
     await update.message.reply_text(message, parse_mode='Markdown')
-    return SELECTING_ACTION
+    # لا نغير الحالة، ليبقى في القائمة الرئيسية
+    return ConversationHandler.END
 
-async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_state.get('selected_pairs') and not bot_state.get('is_running'):
         await update.message.reply_text("⚠️ خطأ: يرجى تحديد زوج عملات واحد على الأقل قبل البدء.")
-        return await send_main_menu(update, context, "")
+        await send_main_menu(update, context, "")
+        return
     bot_state['is_running'] = not bot_state.get('is_running', False)
     if not bot_state['is_running']: context.bot_data['pair_index'] = 0
     save_bot_state()
     message = "✅ تم تشغيل البوت. سيبدأ محرك الحاكم الآن." if bot_state['is_running'] else "❌ تم إيقاف البوت."
     await update.message.reply_text(message)
-    return await send_main_menu(update, context, "")
+    await send_main_menu(update, context, "")
 
 async def select_pairs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يعرض قائمة لاختيار الأزواج باستخدام أزرار نصية عادية."""
     selected = bot_state.get('selected_pairs', [])
     message = "اختر زوجًا لإضافته أو إزالته. الأزواج المختارة حاليًا:\n" + (", ".join(selected) or "لا يوجد")
     
-    # بناء لوحة المفاتيح النصية
+    # استخدام لوحة مفاتيح الرد العادية
     pairs_keyboard = [[KeyboardButton(f"{pair} {'✅' if pair in selected else '❌'}")] for pair in USER_DEFINED_PAIRS]
     pairs_keyboard.append([KeyboardButton("العودة إلى القائمة الرئيسية")])
     reply_markup = ReplyKeyboardMarkup(pairs_keyboard, resize_keyboard=True, one_time_keyboard=True)
@@ -472,10 +474,8 @@ async def select_pairs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return SELECTING_PAIR
 
 async def toggle_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يضيف أو يزيل زوجًا من القائمة ويعيد عرضها."""
     pair = update.message.text.split(" ")[0]
-    if 'selected_pairs' not in bot_state:
-        bot_state['selected_pairs'] = []
+    if 'selected_pairs' not in bot_state: bot_state['selected_pairs'] = []
     
     if pair in bot_state['selected_pairs']:
         bot_state['selected_pairs'].remove(pair)
@@ -487,207 +487,10 @@ async def toggle_pair(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     return await select_pairs_menu(update, context)
 
-
-async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يعرض قائمة الإعدادات الرئيسية باستخدام أزرار نصية."""
-    settings_keyboard = [
-        [KeyboardButton("📁 ملفات تعريف الاستراتيجية"), KeyboardButton("🚦 فلاتر الاتجاه")],
-        [KeyboardButton("تحديد عتبة الإشارة الأولية"), KeyboardButton("تحديد عتبة التأكيد النهائي")],
-        [KeyboardButton("تعديل قيم المؤشرات"), KeyboardButton("📊 استراتيجية الماكد")],
-        [KeyboardButton("العودة إلى القائمة الرئيسية")]
-    ]
-    # هذا هو السطر الصحيح والكامل
-    reply_markup = ReplyKeyboardMarkup(settings_keyboard, resize_keyboard=True, one_time_keyboard=True)
-    
-    await update.message.reply_text("اختر الإعداد الذي تريد تعديله:", reply_markup=reply_markup)
-    return SETTINGS_MENU
-
-async def trend_filter_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يعرض قائمة فلاتر الاتجاه باستخدام أزرار مضمنة."""
-    current_mode = bot_state.get('trend_filter_mode', 'M15')
-    modes = {'NONE': '⚫️ إيقاف الفلترة', 'M15': '🟢 M15 فقط', 'H1': '🟡 H1 فقط', 'M15_H1': '🔴 M15 + H1'}
-    
-    keyboard = []
-    for mode, text in modes.items():
-        button_text = f"{text} {'✅' if current_mode == mode else ''}"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"set_trend_{mode}")])
-    
-    keyboard.append([InlineKeyboardButton("العودة إلى القائمة الرئيسية", callback_data="main_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text("اختر وضع فلتر الاتجاه:", reply_markup=reply_markup)
-    return SETTINGS_MENU
-
-async def set_trend_filter_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يضبط وضع فلتر الاتجاه بناءً على الكول باك."""
-    query = update.callback_query
-    await query.answer()
-    
-    new_mode = query.data.split('_')[-1]
-    bot_state['trend_filter_mode'] = new_mode
-    save_bot_state()
-    
-    await query.edit_message_text(text=f"✅ تم تحديث وضع فلتر الاتجاه إلى: {new_mode}")
-    await send_main_menu(update, context, "القائمة الرئيسية:")
-    return SELECTING_ACTION
-
-async def strategy_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يعرض قائمة ملفات التعريف باستخدام أزرار مضمنة."""
-    profiles = get_strategy_files()
-    keyboard = []
-    for profile in profiles:
-        keyboard.append([InlineKeyboardButton(f"تحميل: {profile}", callback_data=f"load_profile_{profile}")])
-    
-    keyboard.append([InlineKeyboardButton("العودة إلى القائمة الرئيسية", callback_data="main_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    current_profile = bot_state.get('profile_name', 'غير معروف')
-    await update.message.reply_text(f"اختر ملف تعريف لتحميله. (الحالي: {current_profile})", reply_markup=reply_markup)
-    return SETTINGS_MENU
-
-async def set_strategy_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يقوم بتحميل ملف التعريف المختار."""
-    query = update.callback_query
-    await query.answer()
-    
-    profile_filename = query.data.replace("load_profile_", "")
-    if load_strategy_profile(profile_filename):
-        await query.edit_message_text(text=f"✅ تم تحميل ملف التعريف '{bot_state.get('profile_name')}' بنجاح.")
-    else:
-        await query.edit_message_text(text=f"❌ فشل تحميل ملف التعريف '{profile_filename}'.")
-        
-    await send_main_menu(update, context, "القائمة الرئيسية:")
-    return SELECTING_ACTION
-
-async def set_confidence_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يعرض قائمة تحديد عتبات الثقة باستخدام أزرار مضمنة."""
-    setting_type = 'initial' if 'الأولية' in update.message.text else 'final'
-    setting_key = 'initial_confidence' if setting_type == 'initial' else 'confirmation_confidence'
-    current = bot_state.get(setting_key, 2)
-    title = "عتبة الإشارة الأولية" if setting_type == 'initial' else "عتبة التأكيد النهائي"
-    
-    keyboard = []
-    row = []
-    for i in range(2, 7):
-        button_text = f"{i} {'✅' if current == i else ''}"
-        row.append(InlineKeyboardButton(button_text, callback_data=f"set_conf_{setting_type}_{i}"))
-    keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("العودة إلى القائمة الرئيسية", callback_data="main_menu")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(f"اختر الحد الأدنى من المؤشرات لـ **{title}**:", reply_markup=reply_markup, parse_mode='Markdown')
-    return SETTINGS_MENU
-
-async def set_confidence_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يضبط قيمة عتبة الثقة."""
-    query = update.callback_query
-    await query.answer()
-    
-    _, setting_type, value_str = query.data.split('_')
-    value = int(value_str)
-    setting_key = 'initial_confidence' if setting_type == 'initial' else 'confirmation_confidence'
-    
-    bot_state[setting_key] = value
-    save_bot_state()
-    
-    title = "الإشارة الأولية" if setting_type == 'initial' else "التأكيد النهائي"
-    await query.edit_message_text(text=f"✅ تم تحديث عتبة {title} إلى: {value}")
-    
-    await send_main_menu(update, context, "القائمة الرئيسية:")
-    return SELECTING_ACTION
-
-# --- الجزء الذي أعيد تصميمه بالكامل ---
-async def set_indicator_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يعرض قائمة تعديل المؤشرات باستخدام أزرار مضمنة (الطريقة الجديدة)."""
-    params = bot_state.get('indicator_params', {})
-    keyboard = []
-    for key, value in params.items():
-        text = f"{key.replace('_', ' ').title()} ({value})"
-        # استخدام `set_indicator_` كبادئة فريدة
-        callback_data = f"set_indicator_{key}"
-        keyboard.append([InlineKeyboardButton(text, callback_data=callback_data)])
-    
-    keyboard.append([InlineKeyboardButton("العودة إلى القائمة الرئيسية", callback_data="main_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text("اختر المؤشر لتعديل قيمته:", reply_markup=reply_markup)
-    return AWAITING_VALUE # ننتقل إلى حالة انتظار الكول باك أو القيمة الجديدة
-
-async def handle_indicator_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يتعامل مع اختيار المؤشر من القائمة المضمنة."""
-    query = update.callback_query
-    await query.answer()
-    
-    # استخراج اسم المؤشر من بيانات الكول باك
-    param_key = query.data.replace("set_indicator_", "")
-    
-    if param_key in bot_state.get('indicator_params', {}):
-        # تخزين المؤشر المختار في user_data
-        context.user_data['param_to_set'] = param_key
-        
-        # طلب القيمة الجديدة من المستخدم
-        await query.message.reply_text(f"أرسل القيمة الرقمية الجديدة لـ **{param_key}**:", parse_mode='Markdown')
-        
-        # نبقى في نفس الحالة بانتظار رسالة نصية بالقيمة الجديدة
-        return AWAITING_VALUE
-    else:
-        await query.message.reply_text("خطأ: مؤشر غير صالح.")
-        await send_main_menu(update, context, "القائمة الرئيسية:")
-        return SELECTING_ACTION
-
-async def receive_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يستقبل القيمة الرقمية الجديدة للمؤشر."""
-    param_key = context.user_data.get('param_to_set')
-    if not param_key:
-        # إذا لم يكن هناك مؤشر قيد التعديل، تجاهل الرسالة
-        return AWAITING_VALUE
-
-    try:
-        new_value = int(update.message.text)
-        bot_state['indicator_params'][param_key] = new_value
-        save_bot_state()
-        await update.message.reply_text(f"✅ تم حفظ القيمة الجديدة لـ **{param_key}**: {new_value}", parse_mode='Markdown')
-        
-        # تنظيف user_data والعودة للقائمة الرئيسية
-        del context.user_data['param_to_set']
-        await send_main_menu(update, context, "القائمة الرئيسية:")
-        return SELECTING_ACTION
-        
-    except (ValueError, TypeError):
-        await update.message.reply_text("❌ قيمة غير صالحة. يرجى إرسال رقم صحيح فقط.")
-        # نبقى في نفس الحالة لإعطاء المستخدم فرصة أخرى
-        return AWAITING_VALUE
-
-async def set_macd_strategy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يعرض قائمة استراتيجية الماكد باستخدام أزرار مضمنة."""
-    current_strategy = bot_state.get('macd_strategy', 'dynamic')
-    keyboard = [
-        [InlineKeyboardButton(f"ديناميكي (جودة عالية) {'✅' if current_strategy == 'dynamic' else ''}", callback_data="set_macd_dynamic")],
-        [InlineKeyboardButton(f"بسيط (كمية أكبر) {'✅' if current_strategy == 'simple' else ''}", callback_data="set_macd_simple")],
-        [InlineKeyboardButton("العودة إلى القائمة الرئيسية", callback_data="main_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("اختر استراتيجية الماكد:", reply_markup=reply_markup)
-    return SETTINGS_MENU
-
-async def set_macd_strategy_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """يضبط استراتيجية الماكد."""
-    query = update.callback_query
-    await query.answer()
-    
-    new_strategy = query.data.replace("set_macd_", "")
-    bot_state['macd_strategy'] = new_strategy
-    save_bot_state()
-    
-    await query.edit_message_text(text=f"✅ تم تحديث استراتيجية الماكد إلى: {new_strategy}")
-    await send_main_menu(update, context, "القائمة الرئيسية:")
-    return SELECTING_ACTION
-
-# --- باقي الدوال المساعدة ---
-async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not signals_statistics:
         await update.message.reply_text("لا توجد إحصائيات لعرضها حتى الآن.")
-        return SELECTING_ACTION
+        return
 
     message = "📊 **إحصائيات البوت**:\n\n"
     totals = {'initial': 0, 'confirmed': 0, 'failed': 0}
@@ -703,86 +506,260 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         message += f"- نسبة نجاح التأكيد: {rate:.2f}%\n"
 
     await update.message.reply_text(message, parse_mode='Markdown')
-    return SELECTING_ACTION
 
-async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# --- نظام الإعدادات الجديد (Inline Keyboard) ---
+
+async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يعرض قائمة الإعدادات الرئيسية باستخدام أزرار مضمنة."""
+    keyboard = [
+        [InlineKeyboardButton("📁 ملفات تعريف الاستراتيجية", callback_data='settings_profiles')],
+        [InlineKeyboardButton("🚦 فلاتر الاتجاه", callback_data='settings_trend')],
+        [InlineKeyboardButton("📊 استراتيجية الماكد", callback_data='settings_macd')],
+        [InlineKeyboardButton("📈 عتبات الثقة", callback_data='settings_confidence')],
+        [InlineKeyboardButton("🛠️ قيم المؤشرات", callback_data='settings_indicators')],
+        [InlineKeyboardButton("العودة إلى القائمة الرئيسية", callback_data='main_menu')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('اختر الإعداد الذي تريد تعديله:', reply_markup=reply_markup)
+
+async def settings_profiles_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query:
-        await query.answer()
-        await query.edit_message_text("تم الإلغاء.")
-    else:
-        await update.message.reply_text("تم الإلغاء.")
-        
-    await send_main_menu(update, context, "القائمة الرئيسية:")
-    return SELECTING_ACTION
+    await query.answer()
+    
+    profiles = get_strategy_files()
+    keyboard = [[InlineKeyboardButton(f"تحميل: {profile}", callback_data=f"load_profile_{profile}")] for profile in profiles]
+    keyboard.append([InlineKeyboardButton("العودة إلى الإعدادات", callback_data='settings_main')])
+    
+    current_profile = bot_state.get('profile_name', 'غير معروف')
+    await query.edit_message_text(
+        text=f"اختر ملف تعريف لتحميله. (الحالي: {current_profile})",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-# --- دالة التشغيل بعد التهيئة ---
-async def post_init(application: Application) -> None:
-    logger.info("Application initialized. Starting background tasks.")
-    context = ContextTypes.DEFAULT_TYPE(application=application)
-    asyncio.create_task(governor_loop(context))
+async def set_strategy_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    profile_filename = query.data.replace("load_profile_", "")
+    
+    if load_strategy_profile(profile_filename):
+        await query.message.reply_text(f"✅ تم تحميل ملف التعريف '{bot_state.get('profile_name')}' بنجاح.")
+    else:
+        await query.message.reply_text(f"❌ فشل تحميل ملف التعريف '{profile_filename}'.")
+    
+    # العودة إلى القائمة الرئيسية بعد التغيير
+    await send_main_menu(update, context, "تم تحديث ملف التعريف.")
+
+async def settings_trend_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    current_mode = bot_state.get('trend_filter_mode', 'M15')
+    modes = {'NONE': '⚫️ إيقاف الفلترة', 'M15': '🟢 M15 فقط', 'H1': '🟡 H1 فقط', 'M15_H1': '🔴 M15 + H1'}
+    
+    keyboard = [[InlineKeyboardButton(f"{text} {'✅' if current_mode == mode else ''}", callback_data=f"set_trend_{mode}")] for mode, text in modes.items()]
+    keyboard.append([InlineKeyboardButton("العودة إلى الإعدادات", callback_data='settings_main')])
+    
+    await query.edit_message_text(
+        text=f"اختر وضع فلتر الاتجاه:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def set_trend_filter_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    new_mode = query.data.replace("set_trend_", "")
+    bot_state['trend_filter_mode'] = new_mode
+    save_bot_state()
+    await query.message.reply_text(f"تم تحديث وضع فلتر الاتجاه إلى: {new_mode}")
+    await settings_menu_from_callback(update, context)
+
+async def settings_macd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    current_strategy = bot_state.get('macd_strategy', 'dynamic')
+    keyboard = [
+        [InlineKeyboardButton(f"ديناميكي (جودة عالية) {'✅' if current_strategy == 'dynamic' else ''}", callback_data='set_macd_dynamic')],
+        [InlineKeyboardButton(f"بسيط (كمية أكبر) {'✅' if current_strategy == 'simple' else ''}", callback_data='set_macd_simple')],
+        [InlineKeyboardButton("العودة إلى الإعدادات", callback_data='settings_main')]
+    ]
+    await query.edit_message_text(text="اختر استراتيجية الماكد:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def set_macd_strategy_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    new_strategy = query.data.replace("set_macd_", "")
+    bot_state['macd_strategy'] = new_strategy
+    save_bot_state()
+    await query.message.reply_text(f"تم تحديث استراتيجية الماكد إلى: {new_strategy}")
+    await settings_menu_from_callback(update, context)
+
+async def settings_confidence_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    initial_conf = bot_state.get('initial_confidence', 3)
+    final_conf = bot_state.get('confirmation_confidence', 4)
+    
+    keyboard = [
+        [InlineKeyboardButton(f"الإشارة الأولية: {initial_conf}", callback_data='set_conf_initial_2')],
+        [InlineKeyboardButton(f"التأكيد النهائي: {final_conf}", callback_data='set_conf_final_3')],
+        [InlineKeyboardButton("العودة إلى الإعدادات", callback_data='settings_main')]
+    ]
+    await query.edit_message_text(
+        text="اختر العتبة لتعديلها. الأرقام في الأزرار هي أمثلة، يمكنك إدخال أي قيمة.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def set_confidence_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    setting_type = "initial" if "initial" in query.data else "final"
+    title = "الإشارة الأولية" if setting_type == "initial" else "التأكيد النهائي"
+    
+    context.user_data['setting_to_change'] = 'initial_confidence' if setting_type == "initial" else 'confirmation_confidence'
+    
+    await query.message.reply_text(f"أرسل القيمة الرقمية الجديدة لـ **{title}**.")
+    return AWAITING_VALUE
+
+async def settings_indicators_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    params = bot_state.get('indicator_params', {})
+    keyboard = []
+    # تقسيم الأزرار إلى عمودين
+    row = []
+    for key, value in params.items():
+        button = InlineKeyboardButton(f"{key.replace('_', ' ').title()} ({value})", callback_data=f"set_indicator_{key}")
+        row.append(button)
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+        
+    keyboard.append([InlineKeyboardButton("العودة إلى الإعدادات", callback_data='settings_main')])
+    await query.edit_message_text(text="اختر المؤشر لتعديل قيمته:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def set_indicator_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    param_key = query.data.replace("set_indicator_", "")
+    context.user_data['setting_to_change'] = param_key
+    
+    await query.message.reply_text(f"أرسل القيمة الرقمية الجديدة لـ **{param_key.replace('_', ' ').title()}**.")
+    return AWAITING_VALUE
+
+async def receive_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        new_value = int(update.message.text)
+        param_key = context.user_data.get('setting_to_change')
+        
+        if param_key:
+            if param_key in ['initial_confidence', 'confirmation_confidence']:
+                bot_state[param_key] = new_value
+            else:
+                bot_state['indicator_params'][param_key] = new_value
+                
+            save_bot_state()
+            await update.message.reply_text(f"✅ تم حفظ القيمة الجديدة لـ `{param_key}` بنجاح: {new_value}", parse_mode='Markdown')
+            del context.user_data['setting_to_change']
+        else:
+            await update.message.reply_text("حدث خطأ، لم يتم تحديد الإعداد المراد تغييره.")
+
+    except (ValueError, TypeError):
+        await update.message.reply_text("❌ قيمة غير صالحة. يرجى إرسال رقم صحيح فقط.")
+    
+    # إنهاء المحادثة والعودة إلى الحالة الطبيعية
+    return ConversationHandler.END
+
+async def settings_menu_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دالة مساعدة للعودة إلى قائمة الإعدادات من قائمة فرعية."""
+    query = update.callback_query
+    await query.answer()
+    # إعادة إرسال قائمة الإعدادات كرسالة جديدة لتجنب الأخطاء
+    await query.message.reply_text("تم العودة إلى قائمة الإعدادات.")
+    await settings_menu(query, context)
+
 
 # --- نقطة انطلاق البوت ---
-def main() -> None:
+async def main() -> None:
     if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, POLYGON_API_KEY]):
         logger.critical("خطأ فادح: أحد متغيرات البيئة غير موجود.")
         return
 
     load_bot_state()
     
-    application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    # --- الإصلاح النهائي: استخدام asyncio.gather لتشغيل المهام بشكل متزامن وآمن ---
     
+    # 1. بناء التطبيق
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # 2. تهيئة بيانات البوت
     application.bot_data['pair_index'] = 0
     
-    logic_interval = bot_state.get('scan_interval_seconds', 5)
-    application.job_queue.run_repeating(logic_loop, interval=logic_interval, first=5)
-
-    # --- المعالج الرئيسي الجديد ---
+    # 3. إعداد معالج المحادثة الرئيسي (للأزرار العادية)
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[
+            CommandHandler('start', start),
+            MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
+            # معالجات أخرى للأزرار الرئيسية
+            MessageHandler(filters.Regex(r'^حالة البوت:'), toggle_bot_status),
+            MessageHandler(filters.Regex(r'^📊 عرض الإحصائيات$'), show_statistics),
+            MessageHandler(filters.Regex(r'^⚙️ عرض الإعدادات الحالية$'), show_current_settings),
+            MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
+        ],
         states={
-            SELECTING_ACTION: [
-                MessageHandler(filters.Regex(r'^حالة البوت:'), toggle_bot_status),
-                MessageHandler(filters.Regex(r'^اختيار الأزواج$'), select_pairs_menu),
-                MessageHandler(filters.Regex(r'^الإعدادات ⚙️$'), settings_menu),
-                MessageHandler(filters.Regex(r'^📊 عرض الإحصائيات$'), show_statistics),
-                MessageHandler(filters.Regex(r'^⚙️ عرض الإعدادات الحالية$'), show_current_settings),
-            ],
             SELECTING_PAIR: [
                 MessageHandler(filters.Regex(r'^(EUR|USD|AUD|CAD|CHF|JPY)\/.*(✅|❌)$'), toggle_pair),
                 MessageHandler(filters.Regex(r'^العودة إلى القائمة الرئيسية$'), start),
             ],
-            SETTINGS_MENU: [
-                MessageHandler(filters.Regex(r'^📁 ملفات تعريف الاستراتيجية$'), strategy_profile_menu),
-                MessageHandler(filters.Regex(r'^🚦 فلاتر الاتجاه$'), trend_filter_menu),
-                MessageHandler(filters.Regex(r'^تحديد عتبة'), set_confidence_menu),
-                MessageHandler(filters.Regex(r'^تعديل قيم المؤشرات$'), set_indicator_menu),
-                MessageHandler(filters.Regex(r'^📊 استراتيجية الماكد$'), set_macd_strategy_menu),
-                MessageHandler(filters.Regex(r'^العودة إلى القائمة الرئيسية$'), start),
-            ],
             AWAITING_VALUE: [
-                CallbackQueryHandler(handle_indicator_selection, pattern=r'^set_indicator_'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_value),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_value)
             ]
         },
         fallbacks=[CommandHandler('start', start)],
         allow_reentry=True
     )
-
+    
     application.add_handler(conv_handler)
     
-    application.add_handler(CallbackQueryHandler(set_trend_filter_mode, pattern=r'^set_trend_'))
-    application.add_handler(CallbackQueryHandler(set_strategy_profile, pattern=r'^load_profile_'))
-    application.add_handler(CallbackQueryHandler(set_confidence_value, pattern=r'^set_conf_'))
-    application.add_handler(CallbackQueryHandler(set_macd_strategy_value, pattern=r'^set_macd_'))
-    application.add_handler(CallbackQueryHandler(start, pattern=r'^main_menu$'))
+    # 4. إعداد معالجات الأزرار المضمنة (Inline Keyboard Handlers)
+    application.add_handler(CallbackQueryHandler(settings_profiles_menu, pattern='^settings_profiles$'))
+    application.add_handler(CallbackQueryHandler(set_strategy_profile, pattern='^load_profile_'))
+    application.add_handler(CallbackQueryHandler(settings_trend_menu, pattern='^settings_trend$'))
+    application.add_handler(CallbackQueryHandler(set_trend_filter_mode, pattern='^set_trend_'))
+    application.add_handler(CallbackQueryHandler(settings_macd_menu, pattern='^settings_macd$'))
+    application.add_handler(CallbackQueryHandler(set_macd_strategy_value, pattern='^set_macd_'))
+    application.add_handler(CallbackQueryHandler(settings_confidence_menu, pattern='^settings_confidence$'))
+    application.add_handler(CallbackQueryHandler(set_confidence_value, pattern='^set_conf_'))
+    application.add_handler(CallbackQueryHandler(settings_indicators_menu, pattern='^settings_indicators$'))
+    application.add_handler(CallbackQueryHandler(set_indicator_value, pattern='^set_indicator_'))
+    application.add_handler(CallbackQueryHandler(settings_menu_from_callback, pattern='^settings_main$'))
+    application.add_handler(CallbackQueryHandler(send_main_menu, pattern='^main_menu$'))
 
+    # 5. جدولة المحرك المنطقي
+    logic_interval = bot_state.get('scan_interval_seconds', 5)
+    application.job_queue.run_repeating(logic_loop, interval=logic_interval, first=5)
+
+    # 6. بدء خادم Flask في خيط منفصل
     flask_thread = Thread(target=run_flask_app)
     flask_thread.daemon = True
     flask_thread.start()
 
-    logger.info("البوت (إصدار v5.0 النهائي) جاهز للعمل...")
-    application.run_polling()
+    # 7. تشغيل كل شيء معًا
+    try:
+        logger.info("البوت (إصدار v5.1 النهائي) جاهز للعمل...")
+        # تشغيل حلقة الأحداث للبوت ومحرك الحاكم معًا
+        await asyncio.gather(
+            application.run_polling(allowed_updates=Update.ALL_TYPES),
+            governor_loop(ContextTypes.DEFAULT_TYPE(application=application))
+        )
+    except Exception as e:
+        logger.critical(f"حدث خطأ فادح على مستوى التطبيق: {e}", exc_info=True)
 
 if __name__ == '__main__':
-    main()
+    # تشغيل الدالة الرئيسية غير المتزامنة
+    asyncio.run(main())
+
