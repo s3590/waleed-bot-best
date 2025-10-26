@@ -458,8 +458,7 @@ async def toggle_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(message)
     return await send_main_menu(update, context, "")
 
-async def select_pairs_menu(update
-(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def select_pairs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """يعرض قائمة لاختيار الأزواج باستخدام أزرار نصية عادية."""
     selected = bot_state.get('selected_pairs', [])
     message = "اختر زوجًا لإضافته أو إزالته. الأزواج المختارة حاليًا:\n" + (", ".join(selected) or "لا يوجد")
